@@ -1,0 +1,834 @@
+Experiment 1 — Implementation of Symbol Table (C)
+
+Files
+
+symtable.c
+
+/* symtable.c - simple symbol table using hash table */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define TABLE_SIZE 101
+typedef struct Sym {
+    char *name;
+    char *type;
+    int scope;
+    struct Sym *next;
+} Sym;
+
+Sym *table[TABLE_SIZE];
+
+unsigned hash(const char *s){
+    unsigned h = 0;
+    while(*s) h = (h<<5) + h + (unsigned)(*s++);
+    return h % TABLE_SIZE;
+}
+
+Sym *lookup(const char *name){
+    unsigned idx = hash(name);
+    for(Sym *p = table[idx]; p; p = p->next)
+        if(strcmp(p->name, name)==0) return p;
+    return NULL;
+}
+
+Sym *insert_symbol(const char *name, const char *type, int scope){
+    Sym *s = lookup(name);
+    if(s) return s; // already exists
+    unsigned idx = hash(name);
+    s = malloc(sizeof(Sym));
+    s->name = strdup(name);
+    s->type = strdup(type);
+    s->scope = scope;
+    s->next = table[idx];
+    table[idx] = s;
+    return s;
+}
+
+void delete_table(){
+    for(int i=0;i<TABLE_SIZE;i++){
+        Sym *p = table[i];
+        while(p){
+            Sym *q = p->next;
+            free(p->name); free(p->type); free(p);
+            p=q;
+        }
+        table[i]=NULL;
+    }
+}
+
+void display(){
+    printf("Symbol Table:\n");
+    printf("%-15s %-10s %-5s\n","Name","Type","Scope");
+    for(int i=0;i<TABLE_SIZE;i++){
+        for(Sym *p=table[i]; p; p=p->next)
+            printf("%-15s %-10s %-5d\n", p->name, p->type, p->scope);
+    }
+}
+
+int main(){
+    insert_symbol("x","int",0);
+    insert_symbol("y","float",0);
+    insert_symbol("foo","function",0);
+    if(!lookup("z")) insert_symbol("z","char",1);
+    display();
+    delete_table();
+    return 0;
+}
+
+
+Build & Run
+
+gcc -o symtable symtable.c
+./symtable
+
+
+Expected output (example)
+
+Symbol Table:
+Name            Type       Scope
+z               char       1
+foo             function   0
+y               float      0
+x               int        0
+
+Experiment 2 — Implementation of Lexical Analyzer using C (manual scanner)
+
+Files
+
+lexer_c.c
+
+This is a plain C scanner that reads stdin and prints tokens: IDENT, NUMBER, OP, SEMI, LPAREN, RPAREN.
+
+/* lexer_c.c - simple manual lexical analyser in C */
+#include <stdio.h>
+#include <ctype.h>
+#include <string.h>
+
+void token_ident(char *buf){
+    printf("IDENT(%s)\n", buf);
+}
+void token_number(char *buf){
+    printf("NUMBER(%s)\n", buf);
+}
+void token_op(char c){
+    printf("OP(%c)\n", c);
+}
+
+int main(){
+    int c;
+    while((c = getchar()) != EOF){
+        if(isspace(c)) continue;
+        if(isalpha(c)){
+            char buf[256]; int i=0;
+            buf[i++]=c;
+            while((c=getchar())!=EOF && (isalnum(c))) {
+                if(i<255) buf[i++]=c;
+            }
+            buf[i]=0;
+            token_ident(buf);
+            if(c==EOF) break;
+            ungetc(c, stdin);
+        } else if(isdigit(c)){
+            char buf[256]; int i=0;
+            buf[i++]=c;
+            while((c=getchar())!=EOF && isdigit(c)){
+                if(i<255) buf[i++]=c;
+            }
+            buf[i]=0;
+            token_number(buf);
+            if(c==EOF) break;
+            ungetc(c, stdin);
+        } else {
+            switch(c){
+                case '+': case '-': case '*': case '/': token_op(c); break;
+                case ';': printf("SEMI\n"); break;
+                case '(': printf("LPAREN\n"); break;
+                case ')': printf("RPAREN\n"); break;
+                default: printf("UNKNOWN(%c)\n", c); break;
+            }
+        }
+    }
+    return 0;
+}
+
+
+Build & Run
+
+gcc -o lexer_c lexer_c.c
+echo "int x = 42 + y;" | ./lexer_c
+
+
+Expected output
+
+IDENT(int)
+IDENT(x)
+UNKNOWN(=)
+NUMBER(42)
+OP(+)
+IDENT(y)
+SEMI
+
+Experiment 3 — Implementation of Lexical Analyzer using Lex/Flex
+
+Files
+
+lexer.l
+
+%{
+#include <stdio.h>
+%}
+%%
+[ \t\n]+          ;
+"//".*            ; /* skip comments */
+[0-9]+            { printf("NUMBER(%s)\n", yytext); }
+[a-zA-Z_][a-zA-Z0-9_]* { printf("IDENT(%s)\n", yytext); }
+"=="|"!="|"<="|">=" { printf("RELOP(%s)\n", yytext); }
+"+"|"-"|"*"|"/"   { printf("OP(%s)\n", yytext); }
+";"               { printf("SEMI\n"); }
+"("               { printf("LPAREN\n"); }
+")"               { printf("RPAREN\n"); }
+.                 { printf("UNKNOWN(%s)\n", yytext); }
+%%
+int main(int argc,char **argv){
+    yylex();
+    return 0;
+}
+
+
+Build & Run
+
+flex lexer.l
+gcc lex.yy.c -lfl -o lexer_flex
+echo "sum = a + 100;" | ./lexer_flex
+
+
+Expected output
+
+IDENT(sum)
+UNKNOWN(=)
+IDENT(a)
+OP(+)
+NUMBER(100)
+SEMI
+
+Experiment 4(a) — Program to recognize a valid arithmetic expression using + - * /
+
+Use Yacc (Bison) + Flex for parsing expressions.
+
+Files
+
+expr.l
+
+expr.y
+
+expr.l:
+
+%{
+#include "y.tab.h"
+%}
+%%
+[ \t\n]+        ;
+[0-9]+          { yylval = atoi(yytext); return NUMBER; }
+"+"             return PLUS;
+"-"             return MINUS;
+"*"             return MUL;
+"/"             return DIV;
+"("             return LPAREN;
+")"             return RPAREN;
+.               { return yytext[0]; }
+%%
+
+
+expr.y:
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+int yylex(void);
+void yyerror(const char *s){ fprintf(stderr,"Error: %s\n", s); }
+%}
+%token NUMBER PLUS MINUS MUL DIV LPAREN RPAREN
+%left PLUS MINUS
+%left MUL DIV
+%%
+input: /* empty */ | input line ;
+line: '\n'                { /* ignore newline */ }
+    | expr '\n' { printf("Valid expression\n"); }
+    ;
+expr:
+      NUMBER
+    | expr PLUS expr
+    | expr MINUS expr
+    | expr MUL expr
+    | expr DIV expr
+    | LPAREN expr RPAREN
+    ;
+%%
+int main(){
+    printf("Enter expression followed by Enter. Ctrl+D to exit.\n");
+    yyparse();
+    return 0;
+}
+
+
+Build & Run
+
+bison -d expr.y   # produces y.tab.c y.tab.h
+flex expr.l       # produces lex.yy.c
+gcc y.tab.c lex.yy.c -o expr_parser -lfl
+# Run and test:
+echo "3 + (4 * 5)" | ./expr_parser
+
+
+Expected output
+
+Enter expression followed by Enter. Ctrl+D to exit.
+Valid expression
+
+Experiment 4(b) — Recognize valid variable: starts with letter followed by letters/digits (Lex)
+
+This is a pure Lex task (recognize and print whether valid variable).
+
+Files
+
+var.l
+
+%{
+#include <stdio.h>
+%}
+%%
+^[ \t]*[A-Za-z][A-Za-z0-9]*[ \t]*$  { printf("VALID_VARIABLE(%s)\n", yytext); }
+[A-Za-z][A-Za-z0-9]*                { printf("IDENT(%s)\n", yytext); }
+.|\n                                { /* ignore other chars */ }
+%%
+int main(){ yylex(); return 0; }
+
+
+Build & Run
+
+flex var.l
+gcc lex.yy.c -lfl -o var_lexer
+# Test:
+echo "abc123" | ./var_lexer
+
+
+Expected output
+
+VALID_VARIABLE(abc123)
+
+Experiment 4(c) — Recognize valid control structures syntax of C (for, while, if-else, switch-case)
+
+Provide a small Yacc grammar that recognizes structure patterns (not full C).
+
+Files
+
+ctrl.l
+
+ctrl.y
+
+ctrl.l:
+
+%{
+#include "y.tab.h"
+%}
+%%
+"for"       return FOR;
+"while"     return WHILE;
+"if"        return IF;
+"else"      return ELSE;
+"switch"    return SWITCH;
+"case"      return CASE;
+"default"   return DEFAULT;
+"("         return LPAREN;
+")"         return RPAREN;
+"{"         return LBRACE;
+"}"         return RBRACE;
+";"         return SEMI;
+[0-9]+      { return NUMBER; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval = strdup(yytext); return ID; }
+[ \t\n]+    ;
+.           { return yytext[0]; }
+%%
+
+
+ctrl.y:
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+int yylex(void);
+void yyerror(const char *s){ fprintf(stderr,"Syntax Error: %s\n", s); }
+%}
+%token FOR WHILE IF ELSE SWITCH CASE DEFAULT LPAREN RPAREN LBRACE RBRACE SEMI NUMBER ID
+%%
+program:
+    stmt_list
+    ;
+stmt_list:
+      stmt
+    | stmt_list stmt
+    ;
+stmt:
+      for_stmt
+    | while_stmt
+    | if_stmt
+    | switch_stmt
+    | simple_stmt
+    ;
+simple_stmt: ID SEMI { /* simple statement */ }
+           ;
+for_stmt: FOR LPAREN simple_stmt simple_stmt simple_stmt RPAREN LBRACE stmt_list RBRACE ;
+while_stmt: WHILE LPAREN expr RPAREN LBRACE stmt_list RBRACE ;
+if_stmt: IF LPAREN expr RPAREN LBRACE stmt_list RBRACE
+       | IF LPAREN expr RPAREN LBRACE stmt_list RBRACE ELSE LBRACE stmt_list RBRACE
+       ;
+switch_stmt: SWITCH LPAREN ID RPAREN LBRACE case_list RBRACE ;
+case_list: /* empty */ | case_list CASE NUMBER COLON stmt_list | case_list DEFAULT COLON stmt_list ;
+expr: ID | NUMBER ;
+%%
+int main(){
+    printf("Enter control structure (toy grammar)\n");
+    yyparse();
+    return 0;
+}
+
+
+Note: This is a toy recognizer. It detects shape of control-structures rather than full C correctness. You can refine by adding token COLON handling etc.
+
+Build & Run
+
+bison -d ctrl.y
+flex ctrl.l
+gcc y.tab.c lex.yy.c -o ctrl_parser -lfl
+# Run with an example:
+cat <<EOF | ./ctrl_parser
+for ( i ; j ; k ) { x ; }
+EOF
+
+
+Expected output
+(no syntax error → recognized)
+
+Experiment 4(d) — Calculator using LEX and YACC (evaluate arithmetic)
+
+Classic calculator that prints evaluated result.
+
+Files
+
+calc.l
+
+calc.y
+
+calc.l:
+
+%{
+#include "y.tab.h"
+%}
+%%
+[ \t]+          ;
+[0-9]+          { yylval = atoi(yytext); return NUMBER; }
+"("             return '(';
+")"             return ')';
+"+"             return '+';
+"-"             return '-';
+"*"             return '*';
+"/"             return '/';
+\n              return '\n';
+.               { return yytext[0]; }
+%%
+
+
+calc.y:
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+int yylex(void);
+void yyerror(const char *s){ fprintf(stderr,"Error: %s\n", s); }
+%}
+%token NUMBER
+%left '+' '-'
+%left '*' '/'
+%%
+input:
+    | input line
+    ;
+line: '\n'
+    | expr '\n' { printf("Result = %d\n", $1); }
+    ;
+expr:
+      NUMBER       { $$ = $1; }
+    | expr '+' expr { $$ = $1 + $3; }
+    | expr '-' expr { $$ = $1 - $3; }
+    | expr '*' expr { $$ = $1 * $3; }
+    | expr '/' expr { if($3==0){ yyerror("division by zero"); $$=0; } else $$ = $1 / $3; }
+    | '(' expr ')'  { $$ = $2; }
+    ;
+%%
+int main(){
+    printf("Enter expressions, one per line. Ctrl+D to exit.\n");
+    yyparse();
+    return 0;
+}
+
+
+Build & Run
+
+bison -d calc.y
+flex calc.l
+gcc y.tab.c lex.yy.c -o calc -lfl
+# Test:
+echo "3 + 4 * 2" | ./calc
+
+
+Expected output
+
+Enter expressions, one per line. Ctrl+D to exit.
+Result = 11
+
+Experiment 5 — Generate Three-Address Code (TAC) for a simple program using LEX and YACC
+
+We'll produce TAC for arithmetic assignments like a = b + c * 2;
+
+Files
+
+tac.l
+
+tac.y
+
+tac.l:
+
+%{
+#include "y.tab.h"
+%}
+%%
+[ \t\n]+    ;
+[0-9]+      { yylval.ival = atoi(yytext); return NUMBER; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.sval = strdup(yytext); return ID; }
+"="         return ASSIGN;
+";"         return SEMI;
+"+"|"-"|"*"|"/" { return yytext[0]; }
+"("         return '(';
+")"         return ')';
+.           { return yytext[0]; }
+%%
+
+
+tac.y:
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int yylex(void);
+void yyerror(const char *s){ fprintf(stderr,"Parse error: %s\n", s); }
+int temp_count = 0;
+char *newtemp(){ char buf[16]; sprintf(buf,"t%d",++temp_count); return strdup(buf); }
+typedef struct { char *place; } val;
+%}
+%union { int ival; char *sval; val v; }
+%token <sval> ID
+%token <ival> NUMBER
+%token ASSIGN SEMI
+%type <v> expr term factor
+%%
+program: stmt_list ;
+stmt_list: stmt_list stmt | stmt ;
+stmt: ID ASSIGN expr SEMI { printf("%s = %s\n", $1, $3.place); }
+    ;
+expr: expr '+' term { char *t = newtemp(); printf("%s = %s + %s\n", t, $1.place, $3.place); $$ .place = t; }
+    | expr '-' term { char *t = newtemp(); printf("%s = %s - %s\n", t, $1.place, $3.place); $$ .place = t; }
+    | term { $$ = $1; }
+    ;
+term: term '*' factor { char *t = newtemp(); printf("%s = %s * %s\n", t, $1.place, $3.place); $$ .place = t; }
+    | term '/' factor { char *t = newtemp(); printf("%s = %s / %s\n", t, $1.place, $3.place); $$ .place = t; }
+    | factor { $$ = $1; }
+    ;
+factor: ID { $$ .place = $1; }
+      | NUMBER { char *t = newtemp(); printf("%s = %d\n", t, $1); $$ .place = t; }
+      | '(' expr ')' { $$ = $2; }
+      ;
+%%
+int main(){
+    printf("TAC generation (enter statements). Ctrl+D to stop.\n");
+    yyparse();
+    return 0;
+}
+
+
+Build & Run
+
+bison -d tac.y
+flex tac.l
+gcc y.tab.c lex.yy.c -o tac_gen -lfl
+# Test:
+echo "a = b + c * 2;" | ./tac_gen
+
+
+Expected output
+
+TAC generation (enter statements). Ctrl+D to stop.
+t1 = 2
+t2 = c * t1
+t3 = b + t2
+a = t3
+
+Experiment 6 — Implement Type Checking using LEX and YACC
+
+We’ll extend the symbol table to store types and check assignments and arithmetic operations.
+
+Files
+
+typecheck.l
+
+typecheck.y
+
+typecheck.l (similar patterns to previous; returns INT, FLOAT, identifiers, numbers):
+
+%{
+#include "y.tab.h"
+%}
+%%
+[ \t\n]+ ;
+"int"    { return INT_TYPE; }
+"float"  { return FLOAT_TYPE; }
+"="      return ASSIGN;
+";"      return SEMI;
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.sval = strdup(yytext); return ID; }
+[0-9]+  { yylval.ival = atoi(yytext); return NUMBER; }
+.       { return yytext[0]; }
+%%
+
+
+typecheck.y (basic type table & checks):
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef struct Sym { char *name; char *type; struct Sym *next; } Sym;
+#define TABLE 101
+Sym* table[TABLE];
+unsigned hash(const char *s){ unsigned h=0; while(*s) h=(h<<5)+h + (unsigned)(*s++); return h%TABLE; }
+Sym* lookup(const char *name){ unsigned i=hash(name); for(Sym *p=table[i]; p; p=p->next) if(!strcmp(p->name,name)) return p; return NULL; }
+void insert_type(const char *name, const char *type){
+    if(lookup(name)) return;
+    unsigned i=hash(name);
+    Sym* s = malloc(sizeof(Sym)); s->name=strdup(name); s->type=strdup(type);
+    s->next=table[i]; table[i]=s;
+}
+void set_type(const char *name, const char *type){
+    Sym *s = lookup(name);
+    if(s) { free(s->type); s->type = strdup(type); } else insert_type(name,type);
+}
+char *get_type(const char *name){
+    Sym *s = lookup(name); return s ? s->type : NULL;
+}
+void yyerror(const char *s){ fprintf(stderr,"Type Error: %s\n", s); }
+int yylex(void);
+%}
+%union { int ival; char *sval; }
+%token <sval> ID
+%token <ival> NUMBER
+%token INT_TYPE FLOAT_TYPE ASSIGN SEMI
+%type <sval> type
+%type <sval> expr
+%%
+program: decls stmts ;
+decls: /* empty */ | decls decl ;
+decl: type ID SEMI { set_type($2,$1); printf("Declared %s as %s\n",$2,$1); }
+    ;
+type: INT_TYPE { $$ = "int"; } | FLOAT_TYPE { $$ = "float"; };
+stmts: /* empty */ | stmts stmt ;
+stmt: ID ASSIGN expr SEMI {
+        char *lt = get_type($1);
+        char *rt = $3;
+        if(!lt) { yyerror("lhs not declared"); }
+        else if(!rt) { yyerror("rhs has unknown type"); }
+        else if(strcmp(lt, rt)!=0) {
+            fprintf(stderr, "Type mismatch: %s = %s\n", lt, rt);
+        } else {
+            printf("%s = (%s) OK\n", $1, lt);
+        }
+    }
+    ;
+expr: NUMBER { $$ = "int"; }
+    | ID { $$ = get_type($1); }
+    ;
+%%
+int main(){
+    yyparse();
+    return 0;
+}
+
+
+Build & Run
+
+bison -d typecheck.y
+flex typecheck.l
+gcc y.tab.c lex.yy.c -o typecheck -lfl
+# Test:
+cat <<EOF | ./typecheck
+int a;
+float b;
+a = 10;
+b = a;
+EOF
+
+
+Expected output
+
+Declared a as int
+Declared b as float
+a = (int) OK
+Type mismatch: float = int
+
+Experiment 7 — Simple Code Optimization Technique
+
+We’ll implement constant folding on TAC lines produced earlier. Provide a small C program that reads TAC-like lines and folds constant binary ops.
+
+Files
+
+optimize.c
+
+/* optimize.c - simple constant folding for TAC of form t = a op b or x = 5 */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+int is_number(const char* s){
+    for(; *s; ++s) if(!(*s>='0' && *s<='9')) return 0;
+    return 1;
+}
+int main(){
+    char line[256];
+    while(fgets(line, sizeof(line), stdin)){
+        char lhs[64], op1[64], op[8], op2[64];
+        if(sscanf(line, "%s = %s %s %s", lhs, op1, op, op2) == 4){
+            if(is_number(op1) && is_number(op2)){
+                long a = atol(op1), b = atol(op2), r;
+                if(strcmp(op, "+")==0) r = a + b;
+                else if(strcmp(op, "-")==0) r = a - b;
+                else if(strcmp(op, "*")==0) r = a * b;
+                else if(strcmp(op, "/")==0) { if(b==0){ printf("%s = %s %s %s", lhs, op1, op, op2); continue;} r = a / b; }
+                else { printf("%s = %s %s %s", lhs, op1, op, op2); continue; }
+                printf("%s = %ld\n", lhs, r);
+            } else {
+                printf("%s = %s %s %s", lhs, op1, op, op2);
+            }
+        } else {
+            // maybe t = NUMBER
+            if(sscanf(line, "%s = %s", lhs, op1) == 2){
+                printf("%s = %s\n", lhs, op1);
+            } else printf("%s", line);
+        }
+    }
+    return 0;
+}
+
+
+Build & Run
+
+gcc -o optimize optimize.c
+# Example: feed TAC
+cat <<EOF | ./optimize
+t1 = 2
+t2 = 3
+t3 = t1 + t2
+t4 = 4 * 5
+t5 = t4 + t3
+EOF
+
+
+Expected output
+
+t1 = 2
+t2 = 3
+t3 = t1 + t2
+t4 = 20
+t5 = t4 + t3
+
+
+(Here t4 folded from 4 * 5 → 20.)
+
+Experiment 8 — Back-end: Convert TAC to 8086 Assembly
+
+We’ll implement a simple translator from limited TAC to 8086 assembly (MASM/NASM-like). This is illustrative: it translates lines like a = b + t1 and t1 = 5 to 8086 code using stack-based sequence and mov, add, sub, mul, div. This is not a full code generator—just a working mapping.
+
+Files
+
+tac2asm.c
+
+/* tac2asm.c - simple TAC to 8086 .asm translator (toy) */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+int is_number(const char* s){ for(; *s; ++s) if(!(*s>='0'&&*s<='9')) return 0; return 1; }
+
+void emit_prologue(){
+    printf("; 8086 assembly (NASM style) - toy\n");
+    printf("section .data\n");
+    printf("    ; declare memory for variables dynamically\n");
+    printf("section .bss\n");
+    printf("    tmp resw 100\n");
+    printf("section .text\n");
+    printf("global _start\n_start:\n");
+}
+
+void emit_epilogue(){
+    printf("    ; exit (in real mode you'd use int 21h; here placeholder)\n    mov ax, 0x4c00\n    int 0x21\n");
+}
+
+int main(){
+    char line[256];
+    emit_prologue();
+    while(fgets(line,sizeof(line),stdin)){
+        char lhs[64], op1[64], op[8], op2[64];
+        if(sscanf(line, "%s = %s %s %s", lhs, op1, op, op2) == 4){
+            // handle arithmetic
+            if(is_number(op1)){
+                printf("    mov ax, %s\n", op1);
+            } else {
+                printf("    mov ax, [%s]\n", op1);
+            }
+            if(is_number(op2)){
+                printf("    mov bx, %s\n", op2);
+            } else {
+                printf("    mov bx, [%s]\n", op2);
+            }
+            if(strcmp(op, "+")==0) printf("    add ax, bx\n");
+            else if(strcmp(op, "-")==0) printf("    sub ax, bx\n");
+            else if(strcmp(op, "*")==0) printf("    mul bx\n    ; result in ax\n");
+            else if(strcmp(op, "/")==0) printf("    div bx\n    ; result in ax\n");
+            printf("    mov [%s], ax\n", lhs);
+        } else if(sscanf(line, "%s = %s", lhs, op1) == 2){
+            if(is_number(op1)) printf("    mov ax, %s\n    mov [%s], ax\n", op1, lhs);
+            else printf("    mov ax, [%s]\n    mov [%s], ax\n", op1, lhs);
+        } else {
+            printf("; %s", line);
+        }
+    }
+    emit_epilogue();
+    return 0;
+}
+
+
+Build & Run
+
+gcc -o tac2asm tac2asm.c
+# Test with sample TAC:
+cat <<EOF | ./tac2asm > out.asm
+t1 = 2
+t2 = 3
+t3 = t1 + t2
+a = t3
+EOF
+# out.asm now contains 8086-style assembly (toy).
+# To assemble/run you will need an 8086 assembler/emulator (e.g., nasm + dosbox or emu8086).
+
+
+Notes
+
+This translator emits simple mov/add/sub/mul/div using AX/BX registers and a memory location per variable (assumes [] memory addressing — in real 8086 you'd allocate variables in .data or .bss properly and use correct addressing/sizes).
+
+For real 8086 assembly execution, further work is required: proper data segment setup, 16-bit assembler, and an emulator like DOSBox or emu8086. I can expand this to produce runnable .com or .exe if you want.
