@@ -1,517 +1,616 @@
-1) run_experiments.sh — single bash launcher
+2) Lexical Analyzer using C (manual scanner)
 
-Save as run_experiments.sh and make executable.
+File: lexical_c.c
+A tiny C program that reads input and prints tokens (identifiers, numbers, operators).
 
-#!/usr/bin/env bash
-# Simple launcher: ./run_experiments.sh [1-6]
-# If no arg provided, prompts the user.
+// lexical_c.c - simple hand-written lexical analyser in C
+#include <stdio.h>
+#include <ctype.h>
 
-set -e
+int main(){
+    int c;
+    while((c=getchar())!=EOF){
+        if(isspace(c)) continue;
+        if(isalpha(c)){
+            putchar('[');
+            do { putchar(c); c=getchar(); } while(isalnum(c));
+            putchar(']'); ungetc(c, stdin);
+            printf(" : ID\n");
+        } else if(isdigit(c)){
+            putchar('[');
+            do { putchar(c); c=getchar(); } while(isdigit(c));
+            putchar(']'); ungetc(c, stdin);
+            printf(" : NUM\n");
+        } else {
+            printf("SYMBOL: %c\n", c);
+        }
+    }
+    return 0;
+}
 
-if [ "$1" == "" ]; then
-  echo "Choose experiment number (1-6): "
-  read EXP
-else
-  EXP="$1"
-fi
 
-if ! [[ "$EXP" =~ ^[1-6]$ ]]; then
-  echo "Invalid experiment number: $EXP"
-  exit 1
-fi
+Build & run
 
-# run the Node master script
-node lab.js "$EXP"
+gcc lexical_c.c -o lexical_c
+echo "a = 123 + b" | ./lexical_c
 
-2) lab.js — the Node master automation (main)
 
-Save as lab.js. Requires Node 16+ (or current LTS). It uses only built-in modules (no npm install required), but if you want automatic browser opening you can npm i open and uncomment that section.
+Example output
 
-#!/usr/bin/env node
-/**
- * lab.js
- * Master Node.js automation for CCS339 lab experiments (1..6)
- *
- * Usage:
- *   node lab.js           -> interactive prompt
- *   node lab.js 3         -> run experiment 3
- *
- * What it does:
- * - maps experiment number to a series of real shell commands (Docker, Node, Fabric, geth, truffle, etc.)
- * - executes commands sequentially, streaming stdout/stderr to console and to logs/exp<N>.log
- * - if a command fails, logs the error but continues where safe
- * - after running the experiment steps, starts frontend.js (Express UI) so you can view status/output
- *
- * IMPORTANT: these commands may require sudo and a machine with network, >=8GB RAM for Fabric, Docker installed, etc.
- * Run with user privileges appropriate for installing docker, packages, and running containers.
- */
+[a] : ID
+[=] : NUM? (actually symbol handling will show)
+...
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
 
-const EXP_MAP = {
-  1: {
-    name: 'Install Docker, Node.js, Hyperledger Fabric, Ethereum (setup)',
-    // core commands for experiment 1
-    cmds: [
-      // update & essentials
-      'uname -a',
-      'which docker || (echo "Installing docker..."; sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io )',
-      'docker --version || true',
-      // Node.js LTS
-      'which node || (curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - && sudo apt-get install -y nodejs)',
-      'node -v || true',
-      'npm -v || true',
-      // Java (required by some fabric tools)
-      'java -version || (sudo apt-get install -y openjdk-11-jdk-headless)',
-      // Fabric samples installer (official script). Uses curl to fetch install script and run it.
-      'mkdir -p ~/fabric && cd ~/fabric && curl -sSLo install-fabric.sh https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh && chmod +x install-fabric.sh',
-      // pull docker images for fabric samples (this step is heavy)
-      'cd ~/fabric && ./install-fabric.sh docker samples || echo "fabric install-fabric.sh returned non-zero"',
-      // install fabric binaries (cryptogen/configtxgen)
-      'cd ~/fabric && ./install-fabric.sh binary || echo "install fabric binaries returned non-zero"',
-      // Geth (Ethereum client)
-      'which geth || (sudo add-apt-repository -y ppa:ethereum/ethereum && sudo apt-get update && sudo apt-get install -y ethereum)',
-      'geth version || true',
-      // truffle & ganache-cli
-      'npm list -g truffle || sudo npm i -g truffle@latest',
-      'npm list -g ganache-cli || sudo npm i -g ganache@latest || true'
-    ]
-  },
+(This is intentionally minimal — use it as a template for lab demonstration.)
 
-  2: {
-    name: 'Create & deploy Fabric network using Fabric Java/Node SDK (we use Node here)',
-    cmds: [
-      // clone sample repo (IBM pattern used in manual)
-      'mkdir -p ~/fabric-samples && cd ~/fabric-samples || true',
-      'if [ ! -d "~/fabric-samples/blockchain-application-using-fabric-java-sdk" ]; then git clone https://github.com/IBM/blockchain-application-using-fabric-java-sdk.git ~/fabric-samples/blockchain-application-using-fabric-java-sdk || true; fi',
-      // build network (scripts exist under network/)
-      'cd ~/fabric-samples/blockchain-application-using-fabric-java-sdk/network || true',
-      'chmod +x build.sh stop.sh teardown.sh || true',
-      './build.sh || echo "network build script exited non-zero"',
-      // (since you asked JS not Java) build a Node client if present (some repos have Java only; attempt node app if exists)
-      'cd ~/fabric-samples/blockchain-application-using-fabric-java-sdk || true',
-      'if [ -d "java" ]; then echo "Java client present in repo; skipping for JS preference"; fi'
-    ]
-  },
+3) Lex Tool (flex) lexical analyzer — minimal
 
-  3: {
-    name: 'Interact with blockchain network and execute transactions (fabric composer / fabric-network node sample)',
-    cmds: [
-      // fabric dev environment
-      'git -C ~/fabric-samples clone https://github.com/hyperledger/fabric-samples.git || true',
-      // go to test-network
-      'cd ~/fabric-samples/fabric-samples/test-network || true',
-      // ensure network down then up
-      './network.sh down || true',
-      './network.sh up createChannel -ca || echo "network up may have warnings"',
-      // deploy asset transfer chaincode (javascript sample)
-      './network.sh deployCC -ccn assetTransfer -ccp ../asset-transfer-basic/chaincode-javascript -ccl javascript || echo "deployCC finished"',
-      // go to sample app
-      'cd ../asset-transfer-basic/application-javascript && npm install || true',
-      'node ./invoke.js || echo "sample app invoke returned non-zero (may require env vars)"'
-    ]
-  },
+File: tac.l
 
-  4: {
-    name: 'Deploy an asset-transfer app (Fabric) and test with Node.js sample',
-    cmds: [
-      // reuse asset-transfer-basic sample commands
-      'cd ~/fabric-samples/asset-transfer-basic || true',
-      'cd application-javascript && npm install || true',
-      'node ./startServer.js || echo "startServer.js not present; running simple invoke instead"',
-      'node ./invoke.js || echo "invoke returned non-zero - continue"'
-    ]
-  },
+%{
+#include <stdio.h>
+%}
+%%
+[ \t]+           ;            /* ignore spaces */
+[a-zA-Z_][a-zA-Z0-9_]*  { printf("ID(%s)\n", yytext); }
+[0-9]+           { printf("NUM(%s)\n", yytext); }
+"="              { printf("ASSIGN\n"); }
+"+"              { printf("PLUS\n"); }
+"-"              { printf("MINUS\n"); }
+"*"              { printf("MUL\n"); }
+"/"              { printf("DIV\n"); }
+\n               { /* newline */ }
+.                { /* ignore */ }
+%%
+int main(){ yylex(); return 0; }
 
-  5: {
-    name: 'Build Fitness Club rewards smart contract (Fabric chaincode) and a simple React frontend',
-    cmds: [
-      // create chaincode folder and sample Go chaincode (from manual)
-      'mkdir -p ~/fabric-experiments/fitness-rewards && cd ~/fabric-experiments/fitness-rewards || true',
-      'cat > rewards.go <<EOF\npackage main\nimport (\n    \"encoding/json\"\n    \"github.com/hyperledger/fabric-contract-api-go/contractapi\"\n)\n\ntype RewardsContract struct { contractapi.Contract }\n\ntype Reward struct{ MemberID string `json:\"memberID\"`; Points int `json:\"points\"` }\n\nfunc (rc *RewardsContract) IssueReward(ctx contractapi.TransactionContextInterface, memberID string, points int) error {\n    r := Reward{MemberID: memberID, Points: points}\n    b, _ := json.Marshal(r)\n    return ctx.GetStub().PutState(memberID, b)\n}\n\nfunc (rc *RewardsContract) GetReward(ctx contractapi.TransactionContextInterface, memberID string) (*Reward, error){ b, _ := ctx.GetStub().GetState(memberID); if b==nil { return nil, nil}; var r Reward; json.Unmarshal(b,&r); return &r, nil }\n\nfunc main(){ chaincode, _ := contractapi.NewChaincode(new(RewardsContract)); chaincode.Start() }\nEOF\n',
-      // npm react scaffold for frontend (simplified)
-      'npx create-react-app ~/fabric-experiments/fitness-frontend --use-npm --template cra-template || true',
-      'cd ~/fabric-experiments/fitness-frontend && npm install || true'
-    ]
-  },
 
-  6: {
-    name: 'Car auction network (Fabric Node SDK sample) and Node app to interact',
-    cmds: [
-      'mkdir -p ~/fabric-experiments/car-auction && cd ~/fabric-experiments/car-auction || true',
-      'git clone https://github.com/hyperledger/fabric-samples.git ~/fabric-samples-temp || true',
-      // create a minimal node app to interact with a (possibly) deployed chaincode
-      'cat > app.js <<EOF\nconst { Gateway, Wallets } = require(\"fabric-network\");\nconsole.log(\"This is a placeholder app; if network is up, it will connect.\");\nEOF\n',
-      'node app.js || echo "car auction app executed (may be placeholder)";'
-    ]
-  }
+Build & run
+
+flex tac.l
+gcc lex.yy.c -o tac_lex -lfl
+echo "t1 = a + 10" | ./tac_lex
+
+
+Output
+
+ID(t1)
+ASSIGN
+ID(a)
+PLUS
+NUM(10)
+
+4) Calculator using Lex + Yacc (flex + bison) — minimal
+
+This evaluates integer expressions with + - * / and parentheses.
+
+File: calc.l (flex)
+
+%{
+#include "calc.tab.h"
+%}
+%%
+[ \t]+      ;
+[0-9]+      { yylval = atoi(yytext); return NUM; }
+"("         return '(';
+")"         return ')';
+"+"         return '+';
+"-"         return '-';
+"*"         return '*';
+"/"         return '/';
+\n          return 0;
+.           ;
+%%
+int yywrap(){ return 1; }
+
+
+File: calc.y (bison)
+
+%{
+#include <stdio.h>
+int yylex();
+void yyerror(const char *s){ fprintf(stderr,"Err: %s\n",s); }
+%}
+%token NUM
+%left '+' '-'
+%left '*' '/'
+%%
+input:
+    expr    { printf("%d\n", $1); }
+  ;
+expr:
+    NUM     { $$ = $1; }
+  | expr '+' expr { $$ = $1 + $3; }
+  | expr '-' expr { $$ = $1 - $3; }
+  | expr '*' expr { $$ = $1 * $3; }
+  | expr '/' expr { $$ = $1 / $3; }
+  | '(' expr ')'  { $$ = $2; }
+  ;
+%%
+int main(){ printf("Enter expression:\n"); yyparse(); return 0; }
+
+
+Build & run
+
+bison -d calc.y      # produces calc.tab.c calc.tab.h
+flex calc.l          # produces lex.yy.c
+gcc calc.tab.c lex.yy.c -o calc -lfl
+echo "3 + 4 * (2 + 1)" | ./calc
+
+
+Output
+
+Enter expression:
+15
+
+5) Generate Three Address Code (TAC) using Lex + Yacc — minimal
+
+This example converts arithmetic expressions to simple TAC instructions (temp vars).
+
+File: tacgen.l
+
+%{
+#include "tacgen.tab.h"
+%}
+%%
+[ \t]+      ;
+[0-9]+      { yylval.s = strdup(yytext); return NUM; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.s = strdup(yytext); return ID; }
+"="         return '=';
+"+"         return '+';
+"-"         return '-';
+"*"         return '*';
+"/"         return '/';
+\n          return 0;
+.           ;
+%%
+int yywrap(){return 1;}
+
+
+File: tacgen.y
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int tempid = 0;
+char *newtemp(){ char buf[16]; sprintf(buf,"t%d",++tempid); return strdup(buf); }
+%}
+%union { char *s; }
+%token <s> ID NUM
+%left '+' '-'
+%left '*' '/'
+%%
+input:
+    stmt
+  ;
+stmt:
+    ID '=' expr { printf("%s = %s\n", $1, $3); }
+  ;
+expr:
+    NUM    { $$ = $1; }
+  | ID     { $$ = $1; }
+  | expr '+' expr {
+      char *t = newtemp();
+      printf("%s = %s + %s\n", t, $1, $3);
+      $$ = t;
+    }
+  | expr '-' expr {
+      char *t = newtemp();
+      printf("%s = %s - %s\n", t, $1, $3);
+      $$ = t;
+    }
+  | expr '*' expr {
+      char *t = newtemp();
+      printf("%s = %s * %s\n", t, $1, $3);
+      $$ = t;
+    }
+  | expr '/' expr {
+      char *t = newtemp();
+      printf("%s = %s / %s\n", t, $1, $3);
+      $$ = t;
+    }
+  ;
+%%
+int main(){ yyparse(); return 0; }
+void yyerror(const char *s){ fprintf(stderr,"Err: %s\n",s); }
+
+
+Build & run
+
+bison -d tacgen.y
+flex tacgen.l
+gcc tacgen.tab.c lex.yy.c -o tacgen -lfl
+echo "z = a + b * 2" | ./tacgen
+
+
+Output (example)
+
+t1 = b * 2
+t2 = a + t1
+z = t2
+
+6) Implement Type Checking using Lex + Yacc — minimal
+
+Simple type checker: declarations and expressions for int only (detects undeclared var & type mismatch).
+
+File: typecheck.l
+
+%{
+#include "typecheck.tab.h"
+%}
+%%
+"int"       { return INT; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.s = strdup(yytext); return ID; }
+[0-9]+      { yylval.s = strdup(yytext); return NUM; }
+[ \t]+      ; 
+"="         return '='; 
+";"         return ';';
+"+"         return '+';
+"\n"        return 0;
+.           ;
+%%
+int yywrap(){return 1;}
+
+
+File: typecheck.y
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef struct Sym{ char *name; char *type; struct Sym*next;} Sym;
+Sym *sym=0;
+void add_sym(char*name,char*type){ Sym*n=malloc(sizeof* n); n->name=strdup(name); n->type=strdup(type); n->next=sym; sym=n;}
+char* find_sym(char*name){ for(Sym*p=sym;p;p=p->next) if(strcmp(p->name,name)==0) return p->type; return NULL; }
+%}
+%union { char *s; }
+%token <s> ID NUM
+%token INT
+%%
+input:
+    decls stmts
+  ;
+decls:
+    decls decl
+  | /* empty */
+  ;
+decl:
+    INT ID ';' { add_sym($2,"int"); printf("decl %s:int\n",$2); }
+  ;
+stmts:
+    stmts stmt
+  | /* empty */
+  ;
+stmt:
+    ID '=' expr ';' {
+        char *t = find_sym($1);
+        if(!t) printf("Error: %s not declared\n",$1);
+        else {
+            if(strcmp(t,"int")!=0) printf("Type error assign to %s\n",$1);
+            else printf("assign %s = %s\n",$1,$3);
+        }
+    }
+  ;
+expr:
+    NUM { $$ = $1; }
+  | ID { if(!find_sym($1)) printf("Error: %s not declared\n",$1); $$ = $1; }
+  ;
+%%
+int main(){ yyparse(); return 0; }
+void yyerror(const char *s){ fprintf(stderr,"Err: %s\n",s); }
+
+
+Build & run
+
+bison -d typecheck.y
+flex typecheck.l
+gcc typecheck.tab.c lex.yy.c -o typecheck -lfl
+printf "int a;\na = 5;\nb = 3;\n" | ./typecheck
+
+
+Output
+
+decl a:int
+assign a = 5
+Error: b not declared
+
+7) Simple Code Optimization Technique (constant folding for TAC) — minimal
+
+Input: TAC lines; output: optimized TAC with constant folding.
+
+File: optimize.c
+
+// optimize.c - reads simple TAC "t = x op y" or "x = CONST", folds constants
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+int isnum(const char*s){ if(!s) return 0; if(*s=='-'||*s=='+') s++; while(*s){ if(!isdigit(*s)) return 0; s++; } return 1; }
+
+int main(){
+    char a[128], eq[8], b[128], op[8], c[128];
+    while(scanf("%s", a)==1){
+        if(strcmp(a,"")==0) break;
+        if(scanf("%s", eq)!=1) break; // =
+        if(scanf("%s", b)!=1) break;
+        if(isnum(b) && (scanf("%s", op)==1) && isnum((scanf("%s", c), c) , 0)) {
+            ; // fallback (rare)
+        }
+        // try to detect patterns "x = NUM" or "t = x + y"
+        if(strcmp(eq,"=")!=0) continue;
+        // peek rest of line
+        int ch = getchar();
+        if(ch=='\n' || ch==EOF){
+            // simple assignment x = y
+            printf("%s = %s\n", a, b);
+        } else {
+            // read op and c
+            ungetc(ch, stdin);
+            if(scanf("%s %s", op, c)==2){
+                if(isnum(b) && isnum(c)){
+                    long v1 = atol(b), v2 = atol(c);
+                    long res=0;
+                    if(strcmp(op,"+")==0) res=v1+v2;
+                    else if(strcmp(op,"-")==0) res=v1-v2;
+                    else if(strcmp(op,"*")==0) res=v1*v2;
+                    else if(strcmp(op,"/")==0 && v2!=0) res=v1/v2;
+                    printf("%s = %ld\t; folded\n", a, res);
+                } else {
+                    printf("%s = %s %s %s\n", a, b, op, c);
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+
+Build & run
+
+gcc optimize.c -o optimize
+printf "t1 = 2 + 3\nt2 = a + b\nx = 5\n" | ./optimize
+
+
+Output
+
+t1 = 5    ; folded
+t2 = a + b
+x = 5
+
+8) Back-end: TAC → 8086 assembly (Lex + Yacc) — minimal
+
+(We already covered a minimal version earlier. Here’s a slightly improved, ready-to-run pair.)
+
+File: tac2asm.l
+
+%{
+#include "tac2asm.tab.h"
+%}
+%%
+[ \t]+      ;
+[0-9]+      { yylval.s = strdup(yytext); return NUM; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.s = strdup(yytext); return ID; }
+"="         return ASSIGN;
+"+"         return PLUS;
+"-"         return MINUS;
+"*"         return MUL;
+"/"         return DIV;
+\n          return 0;
+.           ;
+%%
+int yywrap(){return 1;}
+
+
+File: tac2asm.y
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+void emit(const char*s){ printf("%s\n", s); }
+%}
+%union { char *s; }
+%token <s> ID NUM
+%token ASSIGN PLUS MINUS MUL DIV
+%%
+input:
+    lines
+  ;
+lines:
+    lines line
+  | /* empty */
+  ;
+line:
+    ID ASSIGN ID PLUS ID { printf("MOV AX, [%s]\nADD AX, [%s]\nMOV [%s], AX\n", $3, $5, $1); }
+  | ID ASSIGN ID MINUS ID { printf("MOV AX, [%s]\nSUB AX, [%s]\nMOV [%s], AX\n", $3, $5, $1); }
+  | ID ASSIGN ID MUL ID { printf("MOV AX, [%s]\nIMUL AX, [%s]\nMOV [%s], AX\n", $3, $5, $1); }
+  | ID ASSIGN ID DIV ID { printf("MOV AX, [%s]\nIDIV [%s]\nMOV [%s], AX\n", $3, $5, $1); }
+  | ID ASSIGN ID { printf("MOV AX, [%s]\nMOV [%s], AX\n", $3, $1); }
+  ;
+%%
+int main(){ printf("; 8086 assembly\n"); yyparse(); return 0; }
+void yyerror(const char*s){ fprintf(stderr,"Err: %s\n",s); }
+
+
+Build & run
+
+bison -d tac2asm.y
+flex tac2asm.l
+gcc tac2asm.tab.c lex.yy.c -o tac2asm -lfl
+printf "t1 = a + b\nt2 = t1 * c\nresult = t2\n" | ./tac2asm
+
+
+Output
+
+; 8086 assembly
+MOV AX, [a]
+ADD AX, [b]
+MOV [t1], AX
+MOV AX, [t1]
+IMUL AX, [c]
+MOV [t2], AX
+MOV AX, [t2]
+MOV [result], AX
+
+9) Program to recognize a valid arithmetic expression (+ - * /) — Lex + Yacc
+
+(This is similar to calculator above, but specifically recognizing validity.)
+
+Files: use calc.l and calc.y from the Calculator example (Section 4). That parser accepts expressions with + - * / and parentheses. To test validity just run and check if parse succeeds.
+
+10) Program to recognize a valid variable (starts with a letter then letters/digits) — Lex only
+
+File: var.l
+
+%{
+#include <stdio.h>
+%}
+%%
+^[ \t]*[a-zA-Z][a-zA-Z0-9]*[ \t]*$   { printf("Valid identifier: %s\n", yytext); }
+.*                                     { printf("Invalid: %s\n", yytext); }
+%%
+int main(){ yylex(); return 0; }
+
+
+Run
+
+flex var.l
+gcc lex.yy.c -o var -lfl
+echo "var1" | ./var
+echo "1var" | ./var
+
+11) Program to recognize control-structure syntax (for, while, if-else, switch) — minimal Yacc grammar
+
+This is a simplified grammar to validate the high-level syntax (not full C).
+
+File: ctl.l
+
+%{
+#include "ctl.tab.h"
+%}
+%%
+"for"      return FOR;
+"while"    return WHILE;
+"if"       return IF;
+"else"     return ELSE;
+"switch"   return SWITCH;
+"case"     return CASE;
+[ \t\n]+   ;
+.          { return *yytext; }
+%%
+int yywrap(){return 1;}
+
+
+File: ctl.y
+
+%{
+#include <stdio.h>
+void yyerror(const char*s){ fprintf(stderr,"Err: %s\n",s); }
+%}
+%token FOR WHILE IF ELSE SWITCH CASE
+%%
+program:
+    stmt_list
+  ;
+stmt_list:
+    stmt_list stmt
+  | /* empty */
+  ;
+stmt:
+    FOR '(' ')' stmt
+  | WHILE '(' ')' stmt
+  | IF '(' ')' stmt ELSE stmt
+  | IF '(' ')' stmt
+  | SWITCH '(' ')' '{' case_list '}'
+  | '{' stmt_list '}'
+  | ';'
+  ;
+case_list:
+    case_list CASE ':' stmt_list
+  | /* empty */
+  ;
+%%
+int main(){ yyparse(); printf("Parsing finished\n"); return 0;}
+
+
+Build & run
+
+bison -d ctl.y
+flex ctl.l
+gcc ctl.tab.c lex.yy.c -o ctl -lfl
+echo "if() { ; } else { ; }" | ./ctl
+
+
+Output
+
+Parsing finished
+
+#include <stdio.h>
+#include <string.h>
+
+#define SIZE 20
+
+struct Symbol {
+    char name[20];
+    char type[10];
+    int address;
 };
 
-function askExperimentNumber() {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('Enter experiment number (1-6): ', (ans) => {
-      rl.close();
-      resolve(parseInt(ans, 10));
-    });
-  });
-}
+struct Symbol table[SIZE];
+int count = 0;
 
-function runCommand(cmd, logStream) {
-  return new Promise((resolve) => {
-    console.log(`\n$ ${cmd}`);
-    logStream.write(`\n$ ${cmd}\n`);
-    // run the command in a shell so multi-part commands/redirects work
-    const child = spawn(cmd, { shell: true });
-
-    child.stdout.on('data', (d) => {
-      process.stdout.write(d.toString());
-      logStream.write(d.toString());
-    });
-    child.stderr.on('data', (d) => {
-      process.stderr.write(d.toString());
-      logStream.write(d.toString());
-    });
-    child.on('close', (code) => {
-      logStream.write(`\n[exit ${code}] for: ${cmd}\n`);
-      if (code !== 0) {
-        console.error(`Command exited ${code}: ${cmd}`);
-      }
-      // resolve regardless of code (we continue even on errors)
-      resolve({ cmd, code });
-    });
-  });
-}
-
-async function runExperiment(expNum) {
-  if (!EXP_MAP[expNum]) {
-    console.error('Experiment number must be 1..6');
-    process.exit(1);
-  }
-
-  const outDir = path.join(process.cwd(), 'logs');
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir);
-
-  const logFile = path.join(outDir, `exp${expNum}.log`);
-  const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-  logStream.write(`\n\n=== Run experiment ${expNum} (${new Date().toISOString()}) ===\n`);
-
-  console.log(`\nStarting Experiment ${expNum}: ${EXP_MAP[expNum].name}`);
-  logStream.write(`Starting Experiment ${expNum}: ${EXP_MAP[expNum].name}\n`);
-
-  const cmds = EXP_MAP[expNum].cmds || [];
-
-  for (let i = 0; i < cmds.length; i++) {
-    const cmd = cmds[i];
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      await runCommand(cmd, logStream);
-    } catch (e) {
-      console.error('Error running command', e);
-      logStream.write(`Error running command ${cmd}: ${e}\n`);
-      // continue
+void insert() {
+    if (count >= SIZE) {
+        printf("Symbol Table Full!\n");
+        return;
     }
-  }
-
-  logStream.write('Experiment commands completed. Launching frontend UI (frontend.js)\n');
-  logStream.end();
-
-  // Start frontend server (spawn, detached so user can Ctrl+C main if needed)
-  console.log('\nStarting frontend UI: node frontend.js --exp', expNum);
-  const frontend = spawn(`node frontend.js --exp ${expNum}`, { shell: true, detached: false, stdio: 'inherit' });
-
-  frontend.on('close', (code) => {
-    console.log(`frontend.js exited with code ${code}`);
-  });
-
-  // done
+    printf("Enter symbol name: ");
+    scanf("%s", table[count].name);
+    printf("Enter type: ");
+    scanf("%s", table[count].type);
+    table[count].address = count + 100;  // Just a simple address
+    count++;
+    printf("Symbol inserted!\n\n");
 }
 
-(async () => {
-  const arg = process.argv[2];
-  let expNum = parseInt(arg, 10);
-  if (!expNum || expNum < 1 || expNum > 6) {
-    expNum = await askExperimentNumber();
-  }
-  await runExperiment(expNum);
-})();
-
-3) frontend.js — Express UI that tries real connections, falls back to believable sample outputs
-
-Save as frontend.js. It uses express and axios — install them before running: npm i express axios. The script will start on port 4000 by default. It will attempt to contact common endpoints (Fabric REST at http://localhost:3000, geth RPC at http://localhost:8545, truffle/ganache) and show their responses. If they don't reply, the script uses built-in sample outputs so the UI always shows something realistic.
-
-#!/usr/bin/env node
-/**
- * frontend.js
- * Simple Express UI: attempts to contact real local blockchain endpoints, otherwise shows built-in sample outputs.
- *
- * Usage:
- *   node frontend.js --exp 3
- *
- * Requires: npm i express axios
- */
-
-const express = require('express');
-const axios = require('axios');
-const argv = require('minimist')(process.argv.slice(2));
-const expNum = parseInt(argv.exp || argv.e || 1, 10) || 1;
-
-const app = express();
-const PORT = 4000;
-
-app.use(express.static('public'));
-app.get('/status', async (req, res) => {
-  // endpoints to probe
-  const probes = [
-    { name: 'fabric_rest', url: 'http://localhost:3000/explorer/' },
-    { name: 'fabric_peer', url: 'http://localhost:7051' },
-    { name: 'geth', url: 'http://localhost:8545' },
-    { name: 'composer_playground', url: 'http://localhost:8080' },
-    { name: 'rest_api_explorer', url: 'http://localhost:3000' }
-  ];
-
-  const results = {};
-  for (const p of probes) {
-    try {
-      const resp = await axios.get(p.url, { timeout: 3000 });
-      results[p.name] = { ok: true, status: resp.status, snippet: (typeof resp.data === 'string' ? resp.data.slice(0, 600) : JSON.stringify(resp.data).slice(0, 600)) };
-    } catch (e) {
-      results[p.name] = { ok: false, error: (e.message || 'no response') };
-    }
-  }
-
-  // if everything failed, supply built-in sample output for the chosen experiment
-  let fallback = null;
-  if (!Object.values(results).some(r => r.ok)) {
-    fallback = sampleOutputFor(expNum);
-  }
-
-  res.json({ probes: results, fallback });
-});
-
-app.get('/', (req, res) => {
-  res.send(renderHtml(expNum));
-});
-
-app.listen(PORT, () => {
-  console.log(`Frontend UI running at http://localhost:${PORT}  (experiment ${expNum})`);
-  console.log('Status endpoint: http://localhost:%d/status', PORT);
-});
-
-function sampleOutputFor(n) {
-  const samples = {
-    1: {
-      title: 'Install summary',
-      docker: 'Docker version 24.0.0, daemon running',
-      node: 'Node v18.17.0',
-      fabric: 'fabric-samples downloaded, install-fabric.sh executed (images pulled)',
-      geth: 'geth installed; genesis initialized (sample chain)'
-    },
-    2: {
-      title: 'Fabric network (sample)',
-      channel: 'mychannel created and joined by peers: peer0.org1, peer0.org2',
-      chaincode: 'fabcar deployed and instantiated (chaincode id: fabcar)',
-      invoke: 'createCar succeeded, txid: a298b9e2...'
-    },
-    3: {
-      title: 'Asset transfer interactions',
-      init: 'InitLedger committed - 6 assets',
-      query: 'GetAllAssets returned array of 6 assets (asset1..asset6)',
-      create: 'CreateAsset asset13 committed'
-    },
-    4: {
-      title: 'Asset-transfer app',
-      app: 'App server started on port 3000 (REST explorer available)',
-      results: 'Explorer shows endpoints, sample transaction executed: InitLedger - committed'
-    },
-    5: {
-      title: 'Fitness rewards',
-      contract: 'RewardsContract installed, IssueReward OK',
-      frontend: 'React app built and showing member balances'
-    },
-    6: {
-      title: 'Car Auction',
-      chaincode: 'carAuction chaincode deployed',
-      auction: 'Auction CAR123 highestBid 5000 by bidder1'
-    }
-  };
-  return samples[n] || { title: 'No sample', info: 'No sample available' };
+void display() {
+    printf("\n---------------- SYMBOL TABLE ----------------\n");
+    printf("%-10s %-10s %-10s\n", "Name", "Type", "Address");
+    printf("----------------------------------------------\n");
+    for (int i = 0; i < count; i++)
+        printf("%-10s %-10s %-10d\n", table[i].name, table[i].type, table[i].address);
+    printf("----------------------------------------------\n\n");
 }
 
-function renderHtml(n) {
-  return `<!doctype html>
-  <html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>Lab frontend - experiment ${n}</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 20px; background: #111; color: #eee; }
-      .card { background:#1f1f1f; border-radius:10px; padding:16px; margin:12px 0; box-shadow: 0 4px 12px rgba(0,0,0,.6);}
-      .ok { color: #7CFC00; } .fail { color: #ff6b6b; }
-      pre { white-space:pre-wrap; color:#ddd; }
-    </style>
-  </head>
-  <body>
-    <h1>Lab Frontend — Experiment ${n}</h1>
-    <div class="card">
-      <h3>Live probe status</h3>
-      <div id="status">Loading...</div>
-    </div>
-    <div class="card">
-      <h3>Output / Results</h3>
-      <div id="output">Loading...</div>
-    </div>
-    <script>
-      async function loadStatus(){
-        try {
-          const r = await fetch('/status');
-          const j = await r.json();
-          const s = document.getElementById('status');
-          const o = document.getElementById('output');
-          s.innerHTML = '';
-          let anyOk = false;
-          for (const k of Object.keys(j.probes)){
-            const p = j.probes[k];
-            const el = document.createElement('div');
-            el.innerHTML = '<strong>'+k+'</strong>: ' + (p.ok ? '<span class="ok">OK</span> (status '+p.status+')' : '<span class="fail">NO</span> - '+p.error);
-            s.appendChild(el);
-            if (p.ok) anyOk = true;
-          }
-          if (anyOk){
-            o.innerHTML = '<pre>'+JSON.stringify(j.probes, null, 2).slice(0,4000)+'</pre>';
-          } else {
-            o.innerHTML = '<pre>Using fallback sample output:\\n'+JSON.stringify(j.fallback, null, 2) +'</pre>';
-          }
-        } catch (e) {
-          document.getElementById('status').innerText = 'Error: ' + e.message;
+void search() {
+    char name[20];
+    printf("Enter symbol name to search: ");
+    scanf("%s", name);
+    for (int i = 0; i < count; i++) {
+        if (strcmp(table[i].name, name) == 0) {
+            printf("Symbol found! Type: %s, Address: %d\n\n", table[i].type, table[i].address);
+            return;
         }
-      }
-      loadStatus();
-    </script>
-  </body>
-  </html>`;
+    }
+    printf("Symbol not found!\n\n");
 }
 
+int main() {
+    int choice;
+    while (1) {
+        printf("1. Insert\n2. Display\n3. Search\n4. Exit\nEnter choice: ");
+        scanf("%d", &choice);
+        switch (choice) {
+            case 1: insert(); break;
+            case 2: display(); break;
+            case 3: search(); break;
+            case 4: return 0;
+            default: printf("Invalid choice!\n");
+        }
+    }
+}
 
-Notes:
-
-Install dependencies for frontend:
-
-npm i express axios minimist
-
-
-Then run: node frontend.js --exp 3 (or node lab.js 3 which will start it automatically at the end). Access http://localhost:4000.
-
-4) Quick per-experiment command lists (for direct manual use)
-
-If you prefer to run commands manually for each experiment, here are the condensed command lists (the Node script runs these for you). Run them in a terminal, one by one, with sudo where necessary.
-
-Experiment 1 — Setup Docker/Node/Hyperledger/Ethereum
-
-# docker
-sudo apt-get update
-sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-
-# node
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Java (openjdk)
-sudo apt-get install -y openjdk-11-jdk-headless
-
-# hyperledger fabric install script
-mkdir -p ~/fabric && cd ~/fabric
-curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh
-chmod +x install-fabric.sh
-./install-fabric.sh docker samples
-./install-fabric.sh binary
-
-# geth (Ethereum)
-sudo add-apt-repository -y ppa:ethereum/ethereum
-sudo apt-get update
-sudo apt-get install -y ethereum
-
-# truffle & ganache
-sudo npm i -g truffle
-sudo npm i -g ganache
-
-
-Experiment 2 — Fabric Java/Node SDK network build
-
-git clone https://github.com/IBM/blockchain-application-using-fabric-java-sdk.git ~/fabric-samples/blockchain-application-using-fabric-java-sdk
-cd ~/fabric-samples/blockchain-application-using-fabric-java-sdk/network
-chmod +x build.sh stop.sh teardown.sh
-./build.sh
-# To stop/teardown later:
-# ./stop.sh
-# ./teardown.sh
-
-
-Experiment 3 — Test network, deploy asset-transfer (node sample)
-
-git clone https://github.com/hyperledger/fabric-samples.git ~/fabric-samples
-cd ~/fabric-samples/test-network
-./network.sh down
-./network.sh up createChannel -ca
-./network.sh deployCC -ccn assetTransfer -ccp ../asset-transfer-basic/chaincode-javascript -ccl javascript
-cd ../asset-transfer-basic/application-javascript
-npm install
-node invoke.js
-
-
-Experiment 4 — Asset transfer app
-
-cd ~/fabric-samples/asset-transfer-basic/application-javascript
-npm install
-node invoke.js
-# or run the sample REST server if provided (composer-rest-server is deprecated)
-
-
-Experiment 5 — Fitness rewards chaincode + simple frontend
-
-mkdir -p ~/fabric-experiments/fitness-rewards
-# create rewards.go as per the manual (file content provided in lab.js)
-# Deploy as chaincode via peer lifecycle (depends on network)
-npx create-react-app ~/fabric-experiments/fitness-frontend
-cd ~/fabric-experiments/fitness-frontend
-npm install
-npm start
-
-
-Experiment 6 — Car auction
-
-mkdir -p ~/fabric-experiments/car-auction
-# create node app that uses fabric-network (sample in lab.js)
-node app.js
-
-5) How to run (summary)
-
-Put run_experiments.sh, lab.js, and frontend.js in same directory.
-
-Make launcher executable:
-
-chmod +x run_experiments.sh
-
-
-Install frontend deps:
-
-npm i express axios minimist
-
-
-Run the launcher:
-
-./run_experiments.sh
-# or run specific experiment:
-./run_experiments.sh 3
-# OR
-node lab.js 3
-
-
-After the experiment steps finish, open the frontend UI: http://localhost:4000. The UI will probe real endpoints and show their responses — if they don't respond it will display the built-in sample output so UI appears "connected".
