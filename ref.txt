@@ -1,616 +1,356 @@
-2) Lexical Analyzer using C (manual scanner)
+1. Learn & use tcpdump, netstat, ifconfig, nslookup, traceroute + capture ping/traceroute PDUs
+Useful commands (Linux)
+# show interfaces (modern systems: ip is preferred, but you asked ifconfig)
+sudo ifconfig -a
 
-File: lexical_c.c
-A tiny C program that reads input and prints tokens (identifiers, numbers, operators).
+# network connections and listening ports
+netstat -tulnp       # show TCP/UDP listening and processes
+ss -tunap            # ss is modern replacement
 
-// lexical_c.c - simple hand-written lexical analyser in C
-#include <stdio.h>
-#include <ctype.h>
+# DNS lookup
+nslookup example.com
+dig example.com
 
-int main(){
-    int c;
-    while((c=getchar())!=EOF){
-        if(isspace(c)) continue;
-        if(isalpha(c)){
-            putchar('[');
-            do { putchar(c); c=getchar(); } while(isalnum(c));
-            putchar(']'); ungetc(c, stdin);
-            printf(" : ID\n");
-        } else if(isdigit(c)){
-            putchar('[');
-            do { putchar(c); c=getchar(); } while(isdigit(c));
-            putchar(']'); ungetc(c, stdin);
-            printf(" : NUM\n");
-        } else {
-            printf("SYMBOL: %c\n", c);
-        }
-    }
-    return 0;
+# path to destination
+traceroute example.com
+# or modern: tracepath example.com
+
+# capture ICMP (ping) and UDP traceroute (often UDP or ICMP) using tcpdump
+sudo tcpdump -i any icmp                # capture ping (ICMP)
+sudo tcpdump -i any 'icmp or udp'       # capture ICMP or UDP packets
+
+# save capture to file for later analysis in Wireshark/tshark
+sudo tcpdump -i any -w capture.pcap icmp or udp
+
+# show capture quickly with tshark (text)
+tshark -r capture.pcap -Y icmp          # filter for ICMP in the pcap
+tshark -r capture.pcap -Y "udp && ip.dst==1.2.3.4"
+
+
+How to capture ping/traceroute PDUs
+
+Start tcpdump (or Wireshark) on interface: sudo tcpdump -i eth0 -w lab1.pcap icmp or udp
+
+In another terminal run ping <target> or traceroute <target>
+
+Stop capture and open lab1.pcap in Wireshark or use tshark -r lab1.pcap to inspect fields.
+
+2. HTTP web client using TCP sockets (Python, minimal)
+# save as http_client.py
+import socket
+
+def download(host, path='/'):
+    port = 80
+    s = socket.socket()
+    s.connect((host, port))
+    req = f"GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n"
+    s.send(req.encode())
+    data = b''
+    while True:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    return data.decode(errors='ignore')
+
+if __name__ == "__main__":
+    print(download('example.com', '/'))
+
+
+Run: python3 http_client.py — prints the raw HTTP response.
+
+3. Applications using TCP sockets
+a) Echo server & client (Python)
+
+Echo server:
+
+# echo_server.py
+import socket
+s = socket.socket()
+s.bind(('0.0.0.0', 9000))
+s.listen(1)
+print("Echo server on 9000")
+conn, addr = s.accept()
+print("Conn from", addr)
+while True:
+    data = conn.recv(1024)
+    if not data:
+        break
+    conn.sendall(data)
+conn.close()
+
+
+Echo client:
+
+# echo_client.py
+import socket
+s = socket.socket()
+s.connect(('127.0.0.1', 9000))
+s.sendall(b'hello\n')
+print(s.recv(1024))
+s.close()
+
+b) Chat (very simple single-room)
+
+Use same pattern: server accepts multiple clients and forwards messages. (If you want, I can give a short multi-client chat example next.)
+
+c) File transfer (TCP) — simple send/receive
+
+Server receive:
+
+# file_recv.py
+import socket
+s = socket.socket(); s.bind(('0.0.0.0', 9001)); s.listen(1)
+conn, _ = s.accept()
+with open('received.bin', 'wb') as f:
+    while True:
+        chunk = conn.recv(4096)
+        if not chunk: break
+        f.write(chunk)
+conn.close()
+
+
+Client send:
+
+# file_send.py
+import socket
+s = socket.socket(); s.connect(('127.0.0.1', 9001))
+with open('bigfile.bin','rb') as f:
+    while chunk := f.read(4096):
+        s.sendall(chunk)
+s.close()
+
+4. Simulation of DNS using UDP sockets (simple authoritative server)
+
+UDP DNS-like server (toy):
+
+# dns_server.py
+import socket
+records = {'example.local':'192.168.1.100', 'server.local':'10.0.0.5'}
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(('0.0.0.0', 53535))
+print("Toy DNS server on 53535")
+while True:
+    data, addr = sock.recvfrom(512)
+    name = data.decode().strip()
+    ip = records.get(name, '0.0.0.0')
+    sock.sendto(ip.encode(), addr)
+
+
+Client:
+
+# dns_client.py
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(b'example.local', ('127.0.0.1', 53535))
+print(s.recv(512).decode())
+
+
+This simulates request→response using UDP.
+
+5. Simulate ARP / RARP protocols (toy) — using UDP messages to simulate broadcasts
+
+ARP table simulator:
+
+# arp_sim.py (run multiple instances or simulate logically)
+# This is a logical simulation: uses UDP to broadcast request and answer.
+import socket, threading
+MY_IP = '10.0.0.2'
+MY_MAC = 'aa:bb:cc:dd:ee:02'
+BCAST_PORT = 37020
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('', BCAST_PORT))
+
+arp_table = {}
+
+def listen():
+    while True:
+        data, addr = sock.recvfrom(1024)
+        msg = data.decode()
+        if msg.startswith('ARP_REQ'):    # ARP request: "ARP_REQ 10.0.0.3"
+            _, ip = msg.split()
+            if ip == MY_IP:
+                sock.sendto(f"ARP_REP {MY_IP} {MY_MAC}".encode(), addr)
+        elif msg.startswith('ARP_REP'):
+            _, ip, mac = msg.split()
+            arp_table[ip] = mac
+            print("ARP table updated:", arp_table)
+
+threading.Thread(target=listen, daemon=True).start()
+
+# make a request for demonstration
+import time
+time.sleep(0.5)
+sock.sendto(b'ARP_REQ 10.0.0.2', ('127.0.0.1', BCAST_PORT))
+time.sleep(1)
+print("Final ARP table:", arp_table)
+
+
+This is a lab-level simulation using messages instead of raw Ethernet.
+
+6. Study of Network simulator (NS) and Simulation of Congestion Control Algorithms
+
+Running ns-2/ns-3 is involved. Below is a small Python AIMD (TCP-like) congestion-window simulator to demonstrate Additive Increase Multiplicative Decrease:
+
+# aimd_sim.py
+import random, matplotlib.pyplot as plt
+
+def simulate(rounds=100, loss_prob=0.05):
+    cwnd = 1.0
+    history = []
+    for r in range(rounds):
+        # send one RTT: cwnd packets; loss occurs with probability loss_prob
+        loss = random.random() < loss_prob
+        if loss:
+            cwnd *= 0.5  # multiplicative decrease
+        else:
+            cwnd += 1.0  # additive increase per RTT
+        if cwnd < 1: cwnd = 1
+        history.append(cwnd)
+    return history
+
+if __name__ == "__main__":
+    hist = simulate(200, 0.08)
+    plt.plot(hist)
+    plt.xlabel("RTT")
+    plt.ylabel("cwnd")
+    plt.title("AIMD cwnd evolution")
+    plt.show()
+
+
+This demonstrates congestion window dynamics.
+
+7. Study TCP/UDP performance using a simple test tool (Python)
+
+Server (supports both TCP & UDP):
+
+# perf_server.py
+import socket, threading
+
+def tcp_server():
+    s = socket.socket(); s.bind(('0.0.0.0', 9002)); s.listen(1)
+    conn, _ = s.accept()
+    bytes_recv = 0
+    while chunk := conn.recv(4096):
+        bytes_recv += len(chunk)
+    print("TCP received bytes:", bytes_recv)
+
+def udp_server():
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.bind(('0.0.0.0', 9003))
+    bytes_recv = 0
+    try:
+        while True:
+            data, _ = u.recvfrom(65536)
+            bytes_recv += len(data)
+    except KeyboardInterrupt:
+        print("UDP received bytes:", bytes_recv)
+
+import threading
+threading.Thread(target=tcp_server, daemon=True).start()
+threading.Thread(target=udp_server, daemon=True).start()
+input("Servers running. Ctrl+C in UDP terminal to stop.\n")
+
+
+Client (send big chunk and measure time):
+
+# perf_client_tcp.py
+import socket, time
+data = b'x'*1024*1024  # 1 MB
+s = socket.socket(); s.connect(('127.0.0.1', 9002))
+t0 = time.time()
+s.sendall(data*5)  # send 5MB
+s.close()
+print("Elapsed:", time.time()-t0)
+
+
+Do similar for UDP using sendto() and measure throughput.
+
+8. Simulation of Distance Vector / Link State routing algorithms (small Python)
+Distance Vector (Bellman-Ford style, iterative)
+# distance_vector.py
+INF = 10**9
+graph = {
+    'A': {'B':1, 'C':5},
+    'B': {'A':1, 'C':2, 'D':4},
+    'C': {'A':5, 'B':2, 'D':1},
+    'D': {'B':4, 'C':1}
 }
 
-
-Build & run
-
-gcc lexical_c.c -o lexical_c
-echo "a = 123 + b" | ./lexical_c
-
-
-Example output
-
-[a] : ID
-[=] : NUM? (actually symbol handling will show)
-...
-
-
-(This is intentionally minimal — use it as a template for lab demonstration.)
-
-3) Lex Tool (flex) lexical analyzer — minimal
-
-File: tac.l
-
-%{
-#include <stdio.h>
-%}
-%%
-[ \t]+           ;            /* ignore spaces */
-[a-zA-Z_][a-zA-Z0-9_]*  { printf("ID(%s)\n", yytext); }
-[0-9]+           { printf("NUM(%s)\n", yytext); }
-"="              { printf("ASSIGN\n"); }
-"+"              { printf("PLUS\n"); }
-"-"              { printf("MINUS\n"); }
-"*"              { printf("MUL\n"); }
-"/"              { printf("DIV\n"); }
-\n               { /* newline */ }
-.                { /* ignore */ }
-%%
-int main(){ yylex(); return 0; }
-
-
-Build & run
-
-flex tac.l
-gcc lex.yy.c -o tac_lex -lfl
-echo "t1 = a + 10" | ./tac_lex
-
-
-Output
-
-ID(t1)
-ASSIGN
-ID(a)
-PLUS
-NUM(10)
-
-4) Calculator using Lex + Yacc (flex + bison) — minimal
-
-This evaluates integer expressions with + - * / and parentheses.
-
-File: calc.l (flex)
-
-%{
-#include "calc.tab.h"
-%}
-%%
-[ \t]+      ;
-[0-9]+      { yylval = atoi(yytext); return NUM; }
-"("         return '(';
-")"         return ')';
-"+"         return '+';
-"-"         return '-';
-"*"         return '*';
-"/"         return '/';
-\n          return 0;
-.           ;
-%%
-int yywrap(){ return 1; }
-
-
-File: calc.y (bison)
-
-%{
-#include <stdio.h>
-int yylex();
-void yyerror(const char *s){ fprintf(stderr,"Err: %s\n",s); }
-%}
-%token NUM
-%left '+' '-'
-%left '*' '/'
-%%
-input:
-    expr    { printf("%d\n", $1); }
-  ;
-expr:
-    NUM     { $$ = $1; }
-  | expr '+' expr { $$ = $1 + $3; }
-  | expr '-' expr { $$ = $1 - $3; }
-  | expr '*' expr { $$ = $1 * $3; }
-  | expr '/' expr { $$ = $1 / $3; }
-  | '(' expr ')'  { $$ = $2; }
-  ;
-%%
-int main(){ printf("Enter expression:\n"); yyparse(); return 0; }
-
-
-Build & run
-
-bison -d calc.y      # produces calc.tab.c calc.tab.h
-flex calc.l          # produces lex.yy.c
-gcc calc.tab.c lex.yy.c -o calc -lfl
-echo "3 + 4 * (2 + 1)" | ./calc
-
-
-Output
-
-Enter expression:
-15
-
-5) Generate Three Address Code (TAC) using Lex + Yacc — minimal
-
-This example converts arithmetic expressions to simple TAC instructions (temp vars).
-
-File: tacgen.l
-
-%{
-#include "tacgen.tab.h"
-%}
-%%
-[ \t]+      ;
-[0-9]+      { yylval.s = strdup(yytext); return NUM; }
-[a-zA-Z_][a-zA-Z0-9_]* { yylval.s = strdup(yytext); return ID; }
-"="         return '=';
-"+"         return '+';
-"-"         return '-';
-"*"         return '*';
-"/"         return '/';
-\n          return 0;
-.           ;
-%%
-int yywrap(){return 1;}
-
-
-File: tacgen.y
-
-%{
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-int tempid = 0;
-char *newtemp(){ char buf[16]; sprintf(buf,"t%d",++tempid); return strdup(buf); }
-%}
-%union { char *s; }
-%token <s> ID NUM
-%left '+' '-'
-%left '*' '/'
-%%
-input:
-    stmt
-  ;
-stmt:
-    ID '=' expr { printf("%s = %s\n", $1, $3); }
-  ;
-expr:
-    NUM    { $$ = $1; }
-  | ID     { $$ = $1; }
-  | expr '+' expr {
-      char *t = newtemp();
-      printf("%s = %s + %s\n", t, $1, $3);
-      $$ = t;
-    }
-  | expr '-' expr {
-      char *t = newtemp();
-      printf("%s = %s - %s\n", t, $1, $3);
-      $$ = t;
-    }
-  | expr '*' expr {
-      char *t = newtemp();
-      printf("%s = %s * %s\n", t, $1, $3);
-      $$ = t;
-    }
-  | expr '/' expr {
-      char *t = newtemp();
-      printf("%s = %s / %s\n", t, $1, $3);
-      $$ = t;
-    }
-  ;
-%%
-int main(){ yyparse(); return 0; }
-void yyerror(const char *s){ fprintf(stderr,"Err: %s\n",s); }
-
-
-Build & run
-
-bison -d tacgen.y
-flex tacgen.l
-gcc tacgen.tab.c lex.yy.c -o tacgen -lfl
-echo "z = a + b * 2" | ./tacgen
-
-
-Output (example)
-
-t1 = b * 2
-t2 = a + t1
-z = t2
-
-6) Implement Type Checking using Lex + Yacc — minimal
-
-Simple type checker: declarations and expressions for int only (detects undeclared var & type mismatch).
-
-File: typecheck.l
-
-%{
-#include "typecheck.tab.h"
-%}
-%%
-"int"       { return INT; }
-[a-zA-Z_][a-zA-Z0-9_]* { yylval.s = strdup(yytext); return ID; }
-[0-9]+      { yylval.s = strdup(yytext); return NUM; }
-[ \t]+      ; 
-"="         return '='; 
-";"         return ';';
-"+"         return '+';
-"\n"        return 0;
-.           ;
-%%
-int yywrap(){return 1;}
-
-
-File: typecheck.y
-
-%{
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-typedef struct Sym{ char *name; char *type; struct Sym*next;} Sym;
-Sym *sym=0;
-void add_sym(char*name,char*type){ Sym*n=malloc(sizeof* n); n->name=strdup(name); n->type=strdup(type); n->next=sym; sym=n;}
-char* find_sym(char*name){ for(Sym*p=sym;p;p=p->next) if(strcmp(p->name,name)==0) return p->type; return NULL; }
-%}
-%union { char *s; }
-%token <s> ID NUM
-%token INT
-%%
-input:
-    decls stmts
-  ;
-decls:
-    decls decl
-  | /* empty */
-  ;
-decl:
-    INT ID ';' { add_sym($2,"int"); printf("decl %s:int\n",$2); }
-  ;
-stmts:
-    stmts stmt
-  | /* empty */
-  ;
-stmt:
-    ID '=' expr ';' {
-        char *t = find_sym($1);
-        if(!t) printf("Error: %s not declared\n",$1);
-        else {
-            if(strcmp(t,"int")!=0) printf("Type error assign to %s\n",$1);
-            else printf("assign %s = %s\n",$1,$3);
-        }
-    }
-  ;
-expr:
-    NUM { $$ = $1; }
-  | ID { if(!find_sym($1)) printf("Error: %s not declared\n",$1); $$ = $1; }
-  ;
-%%
-int main(){ yyparse(); return 0; }
-void yyerror(const char *s){ fprintf(stderr,"Err: %s\n",s); }
-
-
-Build & run
-
-bison -d typecheck.y
-flex typecheck.l
-gcc typecheck.tab.c lex.yy.c -o typecheck -lfl
-printf "int a;\na = 5;\nb = 3;\n" | ./typecheck
-
-
-Output
-
-decl a:int
-assign a = 5
-Error: b not declared
-
-7) Simple Code Optimization Technique (constant folding for TAC) — minimal
-
-Input: TAC lines; output: optimized TAC with constant folding.
-
-File: optimize.c
-
-// optimize.c - reads simple TAC "t = x op y" or "x = CONST", folds constants
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <ctype.h>
-
-int isnum(const char*s){ if(!s) return 0; if(*s=='-'||*s=='+') s++; while(*s){ if(!isdigit(*s)) return 0; s++; } return 1; }
-
-int main(){
-    char a[128], eq[8], b[128], op[8], c[128];
-    while(scanf("%s", a)==1){
-        if(strcmp(a,"")==0) break;
-        if(scanf("%s", eq)!=1) break; // =
-        if(scanf("%s", b)!=1) break;
-        if(isnum(b) && (scanf("%s", op)==1) && isnum((scanf("%s", c), c) , 0)) {
-            ; // fallback (rare)
-        }
-        // try to detect patterns "x = NUM" or "t = x + y"
-        if(strcmp(eq,"=")!=0) continue;
-        // peek rest of line
-        int ch = getchar();
-        if(ch=='\n' || ch==EOF){
-            // simple assignment x = y
-            printf("%s = %s\n", a, b);
-        } else {
-            // read op and c
-            ungetc(ch, stdin);
-            if(scanf("%s %s", op, c)==2){
-                if(isnum(b) && isnum(c)){
-                    long v1 = atol(b), v2 = atol(c);
-                    long res=0;
-                    if(strcmp(op,"+")==0) res=v1+v2;
-                    else if(strcmp(op,"-")==0) res=v1-v2;
-                    else if(strcmp(op,"*")==0) res=v1*v2;
-                    else if(strcmp(op,"/")==0 && v2!=0) res=v1/v2;
-                    printf("%s = %ld\t; folded\n", a, res);
-                } else {
-                    printf("%s = %s %s %s\n", a, b, op, c);
-                }
-            }
-        }
-    }
-    return 0;
-}
-
-
-Build & run
-
-gcc optimize.c -o optimize
-printf "t1 = 2 + 3\nt2 = a + b\nx = 5\n" | ./optimize
-
-
-Output
-
-t1 = 5    ; folded
-t2 = a + b
-x = 5
-
-8) Back-end: TAC → 8086 assembly (Lex + Yacc) — minimal
-
-(We already covered a minimal version earlier. Here’s a slightly improved, ready-to-run pair.)
-
-File: tac2asm.l
-
-%{
-#include "tac2asm.tab.h"
-%}
-%%
-[ \t]+      ;
-[0-9]+      { yylval.s = strdup(yytext); return NUM; }
-[a-zA-Z_][a-zA-Z0-9_]* { yylval.s = strdup(yytext); return ID; }
-"="         return ASSIGN;
-"+"         return PLUS;
-"-"         return MINUS;
-"*"         return MUL;
-"/"         return DIV;
-\n          return 0;
-.           ;
-%%
-int yywrap(){return 1;}
-
-
-File: tac2asm.y
-
-%{
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-void emit(const char*s){ printf("%s\n", s); }
-%}
-%union { char *s; }
-%token <s> ID NUM
-%token ASSIGN PLUS MINUS MUL DIV
-%%
-input:
-    lines
-  ;
-lines:
-    lines line
-  | /* empty */
-  ;
-line:
-    ID ASSIGN ID PLUS ID { printf("MOV AX, [%s]\nADD AX, [%s]\nMOV [%s], AX\n", $3, $5, $1); }
-  | ID ASSIGN ID MINUS ID { printf("MOV AX, [%s]\nSUB AX, [%s]\nMOV [%s], AX\n", $3, $5, $1); }
-  | ID ASSIGN ID MUL ID { printf("MOV AX, [%s]\nIMUL AX, [%s]\nMOV [%s], AX\n", $3, $5, $1); }
-  | ID ASSIGN ID DIV ID { printf("MOV AX, [%s]\nIDIV [%s]\nMOV [%s], AX\n", $3, $5, $1); }
-  | ID ASSIGN ID { printf("MOV AX, [%s]\nMOV [%s], AX\n", $3, $1); }
-  ;
-%%
-int main(){ printf("; 8086 assembly\n"); yyparse(); return 0; }
-void yyerror(const char*s){ fprintf(stderr,"Err: %s\n",s); }
-
-
-Build & run
-
-bison -d tac2asm.y
-flex tac2asm.l
-gcc tac2asm.tab.c lex.yy.c -o tac2asm -lfl
-printf "t1 = a + b\nt2 = t1 * c\nresult = t2\n" | ./tac2asm
-
-
-Output
-
-; 8086 assembly
-MOV AX, [a]
-ADD AX, [b]
-MOV [t1], AX
-MOV AX, [t1]
-IMUL AX, [c]
-MOV [t2], AX
-MOV AX, [t2]
-MOV [result], AX
-
-9) Program to recognize a valid arithmetic expression (+ - * /) — Lex + Yacc
-
-(This is similar to calculator above, but specifically recognizing validity.)
-
-Files: use calc.l and calc.y from the Calculator example (Section 4). That parser accepts expressions with + - * / and parentheses. To test validity just run and check if parse succeeds.
-
-10) Program to recognize a valid variable (starts with a letter then letters/digits) — Lex only
-
-File: var.l
-
-%{
-#include <stdio.h>
-%}
-%%
-^[ \t]*[a-zA-Z][a-zA-Z0-9]*[ \t]*$   { printf("Valid identifier: %s\n", yytext); }
-.*                                     { printf("Invalid: %s\n", yytext); }
-%%
-int main(){ yylex(); return 0; }
-
-
-Run
-
-flex var.l
-gcc lex.yy.c -o var -lfl
-echo "var1" | ./var
-echo "1var" | ./var
-
-11) Program to recognize control-structure syntax (for, while, if-else, switch) — minimal Yacc grammar
-
-This is a simplified grammar to validate the high-level syntax (not full C).
-
-File: ctl.l
-
-%{
-#include "ctl.tab.h"
-%}
-%%
-"for"      return FOR;
-"while"    return WHILE;
-"if"       return IF;
-"else"     return ELSE;
-"switch"   return SWITCH;
-"case"     return CASE;
-[ \t\n]+   ;
-.          { return *yytext; }
-%%
-int yywrap(){return 1;}
-
-
-File: ctl.y
-
-%{
-#include <stdio.h>
-void yyerror(const char*s){ fprintf(stderr,"Err: %s\n",s); }
-%}
-%token FOR WHILE IF ELSE SWITCH CASE
-%%
-program:
-    stmt_list
-  ;
-stmt_list:
-    stmt_list stmt
-  | /* empty */
-  ;
-stmt:
-    FOR '(' ')' stmt
-  | WHILE '(' ')' stmt
-  | IF '(' ')' stmt ELSE stmt
-  | IF '(' ')' stmt
-  | SWITCH '(' ')' '{' case_list '}'
-  | '{' stmt_list '}'
-  | ';'
-  ;
-case_list:
-    case_list CASE ':' stmt_list
-  | /* empty */
-  ;
-%%
-int main(){ yyparse(); printf("Parsing finished\n"); return 0;}
-
-
-Build & run
-
-bison -d ctl.y
-flex ctl.l
-gcc ctl.tab.c lex.yy.c -o ctl -lfl
-echo "if() { ; } else { ; }" | ./ctl
-
-
-Output
-
-Parsing finished
-
-#include <stdio.h>
-#include <string.h>
-
-#define SIZE 20
-
-struct Symbol {
-    char name[20];
-    char type[10];
-    int address;
-};
-
-struct Symbol table[SIZE];
-int count = 0;
-
-void insert() {
-    if (count >= SIZE) {
-        printf("Symbol Table Full!\n");
-        return;
-    }
-    printf("Enter symbol name: ");
-    scanf("%s", table[count].name);
-    printf("Enter type: ");
-    scanf("%s", table[count].type);
-    table[count].address = count + 100;  // Just a simple address
-    count++;
-    printf("Symbol inserted!\n\n");
-}
-
-void display() {
-    printf("\n---------------- SYMBOL TABLE ----------------\n");
-    printf("%-10s %-10s %-10s\n", "Name", "Type", "Address");
-    printf("----------------------------------------------\n");
-    for (int i = 0; i < count; i++)
-        printf("%-10s %-10s %-10d\n", table[i].name, table[i].type, table[i].address);
-    printf("----------------------------------------------\n\n");
-}
-
-void search() {
-    char name[20];
-    printf("Enter symbol name to search: ");
-    scanf("%s", name);
-    for (int i = 0; i < count; i++) {
-        if (strcmp(table[i].name, name) == 0) {
-            printf("Symbol found! Type: %s, Address: %d\n\n", table[i].type, table[i].address);
-            return;
-        }
-    }
-    printf("Symbol not found!\n\n");
-}
-
-int main() {
-    int choice;
-    while (1) {
-        printf("1. Insert\n2. Display\n3. Search\n4. Exit\nEnter choice: ");
-        scanf("%d", &choice);
-        switch (choice) {
-            case 1: insert(); break;
-            case 2: display(); break;
-            case 3: search(); break;
-            case 4: return 0;
-            default: printf("Invalid choice!\n");
-        }
-    }
-}
-
+def distance_vector(nodes, graph):
+    dist = {u: {v:(0 if u==v else INF) for v in nodes} for u in nodes}
+    for u in nodes:
+        for v,w in graph.get(u, {}).items():
+            dist[u][v] = w
+    changed = True
+    while changed:
+        changed = False
+        for u in nodes:
+            for v in nodes:
+                for nbr,w in graph.get(u, {}).items():
+                    if dist[u][v] > w + dist[nbr][v]:
+                        dist[u][v] = w + dist[nbr][v]; changed=True
+    return dist
+
+print(distance_vector(list(graph.keys()), graph))
+
+Link State (Dijkstra)
+# link_state.py
+import heapq
+def dijkstra(src, graph):
+    dist = {v:float('inf') for v in graph}; dist[src]=0
+    pq = [(0, src)]
+    while pq:
+        d,u = heapq.heappop(pq)
+        if d!=dist[u]: continue
+        for v,w in graph[u].items():
+            nd = d + w
+            if nd < dist[v]:
+                dist[v] = nd; heapq.heappush(pq, (nd,v))
+    return dist
+
+print(dijkstra('A', graph))
+
+9. Performance evaluation of Routing protocols using a simulation tool (simple comparative script)
+
+You can use the DV and LS functions above to measure convergence iterations or time for random link cost changes.
+
+Example: compare iterations to converge after a link cost change (DV vs recompute Dijkstra):
+
+# compare_convergence.py
+from distance_vector import distance_vector
+from link_state import dijkstra
+# For DV, we can count while loops iterations (modify function to return count)
+# For LS (link-state), recompute Dijkstra from each node and measure time
+import time
+# (left as exercise to instrument; if you want I can give full script)
+
+
+If you want a ready experiment, I’ll extend with iteration counting and randomized link changes.
+
+10. Simulation of error detection using CRC (Python)
+
+Compute CRC-16-CCITT (simple example) and simulate error detection:
+
+# crc16.py
+def crc16_ccitt(data: bytes, poly=0x1021, init=0xffff):
+    crc = init
+    for b in data:
+        crc ^= (b << 8)
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) & 0xffff) ^ poly
+            else:
+                crc = (crc << 1) & 0xffff
+    return crc & 0xffff
+
+if __name__ == "__main__":
+    msg = b'hello world'
+    c = crc16_ccitt(msg)
+    print(hex(c))
+    # simulate flip
+    corrupted = b'hello worle'  # last char changed
+    print("Corrupted detected?" , crc16_ccitt(corrupted) != c)
