@@ -1,356 +1,796 @@
-1. Learn & use tcpdump, netstat, ifconfig, nslookup, traceroute + capture ping/traceroute PDUs
-Useful commands (Linux)
-# show interfaces (modern systems: ip is preferred, but you asked ifconfig)
-sudo ifconfig -a
-
-# network connections and listening ports
-netstat -tulnp       # show TCP/UDP listening and processes
-ss -tunap            # ss is modern replacement
-
-# DNS lookup
-nslookup example.com
-dig example.com
-
-# path to destination
-traceroute example.com
-# or modern: tracepath example.com
-
-# capture ICMP (ping) and UDP traceroute (often UDP or ICMP) using tcpdump
-sudo tcpdump -i any icmp                # capture ping (ICMP)
-sudo tcpdump -i any 'icmp or udp'       # capture ICMP or UDP packets
-
-# save capture to file for later analysis in Wireshark/tshark
-sudo tcpdump -i any -w capture.pcap icmp or udp
-
-# show capture quickly with tshark (text)
-tshark -r capture.pcap -Y icmp          # filter for ICMP in the pcap
-tshark -r capture.pcap -Y "udp && ip.dst==1.2.3.4"
-
-
-How to capture ping/traceroute PDUs
-
-Start tcpdump (or Wireshark) on interface: sudo tcpdump -i eth0 -w lab1.pcap icmp or udp
-
-In another terminal run ping <target> or traceroute <target>
-
-Stop capture and open lab1.pcap in Wireshark or use tshark -r lab1.pcap to inspect fields.
-
-2. HTTP web client using TCP sockets (Python, minimal)
-# save as http_client.py
-import socket
-
-def download(host, path='/'):
-    port = 80
-    s = socket.socket()
-    s.connect((host, port))
-    req = f"GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n"
-    s.send(req.encode())
-    data = b''
-    while True:
-        chunk = s.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-    s.close()
-    return data.decode(errors='ignore')
-
-if __name__ == "__main__":
-    print(download('example.com', '/'))
-
-
-Run: python3 http_client.py — prints the raw HTTP response.
-
-3. Applications using TCP sockets
-a) Echo server & client (Python)
-
-Echo server:
-
-# echo_server.py
-import socket
-s = socket.socket()
-s.bind(('0.0.0.0', 9000))
-s.listen(1)
-print("Echo server on 9000")
-conn, addr = s.accept()
-print("Conn from", addr)
-while True:
-    data = conn.recv(1024)
-    if not data:
-        break
-    conn.sendall(data)
-conn.close()
-
-
-Echo client:
-
-# echo_client.py
-import socket
-s = socket.socket()
-s.connect(('127.0.0.1', 9000))
-s.sendall(b'hello\n')
-print(s.recv(1024))
-s.close()
-
-b) Chat (very simple single-room)
-
-Use same pattern: server accepts multiple clients and forwards messages. (If you want, I can give a short multi-client chat example next.)
-
-c) File transfer (TCP) — simple send/receive
-
-Server receive:
-
-# file_recv.py
-import socket
-s = socket.socket(); s.bind(('0.0.0.0', 9001)); s.listen(1)
-conn, _ = s.accept()
-with open('received.bin', 'wb') as f:
-    while True:
-        chunk = conn.recv(4096)
-        if not chunk: break
-        f.write(chunk)
-conn.close()
-
-
-Client send:
-
-# file_send.py
-import socket
-s = socket.socket(); s.connect(('127.0.0.1', 9001))
-with open('bigfile.bin','rb') as f:
-    while chunk := f.read(4096):
-        s.sendall(chunk)
-s.close()
-
-4. Simulation of DNS using UDP sockets (simple authoritative server)
-
-UDP DNS-like server (toy):
-
-# dns_server.py
-import socket
-records = {'example.local':'192.168.1.100', 'server.local':'10.0.0.5'}
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(('0.0.0.0', 53535))
-print("Toy DNS server on 53535")
-while True:
-    data, addr = sock.recvfrom(512)
-    name = data.decode().strip()
-    ip = records.get(name, '0.0.0.0')
-    sock.sendto(ip.encode(), addr)
-
-
-Client:
-
-# dns_client.py
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.sendto(b'example.local', ('127.0.0.1', 53535))
-print(s.recv(512).decode())
-
-
-This simulates request→response using UDP.
-
-5. Simulate ARP / RARP protocols (toy) — using UDP messages to simulate broadcasts
-
-ARP table simulator:
-
-# arp_sim.py (run multiple instances or simulate logically)
-# This is a logical simulation: uses UDP to broadcast request and answer.
-import socket, threading
-MY_IP = '10.0.0.2'
-MY_MAC = 'aa:bb:cc:dd:ee:02'
-BCAST_PORT = 37020
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-sock.bind(('', BCAST_PORT))
-
-arp_table = {}
-
-def listen():
-    while True:
-        data, addr = sock.recvfrom(1024)
-        msg = data.decode()
-        if msg.startswith('ARP_REQ'):    # ARP request: "ARP_REQ 10.0.0.3"
-            _, ip = msg.split()
-            if ip == MY_IP:
-                sock.sendto(f"ARP_REP {MY_IP} {MY_MAC}".encode(), addr)
-        elif msg.startswith('ARP_REP'):
-            _, ip, mac = msg.split()
-            arp_table[ip] = mac
-            print("ARP table updated:", arp_table)
-
-threading.Thread(target=listen, daemon=True).start()
-
-# make a request for demonstration
-import time
-time.sleep(0.5)
-sock.sendto(b'ARP_REQ 10.0.0.2', ('127.0.0.1', BCAST_PORT))
-time.sleep(1)
-print("Final ARP table:", arp_table)
-
-
-This is a lab-level simulation using messages instead of raw Ethernet.
-
-6. Study of Network simulator (NS) and Simulation of Congestion Control Algorithms
-
-Running ns-2/ns-3 is involved. Below is a small Python AIMD (TCP-like) congestion-window simulator to demonstrate Additive Increase Multiplicative Decrease:
-
-# aimd_sim.py
-import random, matplotlib.pyplot as plt
-
-def simulate(rounds=100, loss_prob=0.05):
-    cwnd = 1.0
-    history = []
-    for r in range(rounds):
-        # send one RTT: cwnd packets; loss occurs with probability loss_prob
-        loss = random.random() < loss_prob
-        if loss:
-            cwnd *= 0.5  # multiplicative decrease
-        else:
-            cwnd += 1.0  # additive increase per RTT
-        if cwnd < 1: cwnd = 1
-        history.append(cwnd)
-    return history
-
-if __name__ == "__main__":
-    hist = simulate(200, 0.08)
-    plt.plot(hist)
-    plt.xlabel("RTT")
-    plt.ylabel("cwnd")
-    plt.title("AIMD cwnd evolution")
-    plt.show()
-
-
-This demonstrates congestion window dynamics.
-
-7. Study TCP/UDP performance using a simple test tool (Python)
-
-Server (supports both TCP & UDP):
-
-# perf_server.py
-import socket, threading
-
-def tcp_server():
-    s = socket.socket(); s.bind(('0.0.0.0', 9002)); s.listen(1)
-    conn, _ = s.accept()
-    bytes_recv = 0
-    while chunk := conn.recv(4096):
-        bytes_recv += len(chunk)
-    print("TCP received bytes:", bytes_recv)
-
-def udp_server():
-    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    u.bind(('0.0.0.0', 9003))
-    bytes_recv = 0
-    try:
-        while True:
-            data, _ = u.recvfrom(65536)
-            bytes_recv += len(data)
-    except KeyboardInterrupt:
-        print("UDP received bytes:", bytes_recv)
-
-import threading
-threading.Thread(target=tcp_server, daemon=True).start()
-threading.Thread(target=udp_server, daemon=True).start()
-input("Servers running. Ctrl+C in UDP terminal to stop.\n")
-
-
-Client (send big chunk and measure time):
-
-# perf_client_tcp.py
-import socket, time
-data = b'x'*1024*1024  # 1 MB
-s = socket.socket(); s.connect(('127.0.0.1', 9002))
-t0 = time.time()
-s.sendall(data*5)  # send 5MB
-s.close()
-print("Elapsed:", time.time()-t0)
-
-
-Do similar for UDP using sendto() and measure throughput.
-
-8. Simulation of Distance Vector / Link State routing algorithms (small Python)
-Distance Vector (Bellman-Ford style, iterative)
-# distance_vector.py
-INF = 10**9
-graph = {
-    'A': {'B':1, 'C':5},
-    'B': {'A':1, 'C':2, 'D':4},
-    'C': {'A':5, 'B':2, 'D':1},
-    'D': {'B':4, 'C':1}
+EXPERIMENT 1 — Install & Understand (NO JS code)
+
+Goal: install Docker, Node.js, Java, Hyperledger Fabric, Ethereum — no JS code required here.
+
+Files / Commands
+
+1_setup/prereqs.sh (Ubuntu/Debian)
+
+#!/usr/bin/env bash
+set -e
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl jq build-essential apt-transport-https ca-certificates gnupg lsb-release
+# Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+sudo apt-get install -y docker-compose-plugin
+# Node (nvm)
+if [ ! -d "$HOME/.nvm" ]; then
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+  export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+fi
+export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+nvm install --lts; nvm use --lts
+# Java 17 + maven
+sudo apt install -y openjdk-17-jdk maven
+# Hardhat (Ethereum)
+sudo npm install -g hardhat
+# Fabric samples (optional, may be large)
+if [ ! -d "$HOME/fabric-samples" ]; then
+  git clone https://github.com/hyperledger/fabric-samples.git $HOME/fabric-samples
+  pushd $HOME/fabric-samples
+  # bootstrap script may be present; run if you want to fetch images
+  [ -f ./scripts/bootstrap.sh ] && ./scripts/bootstrap.sh || true
+  popd
+fi
+echo "Prereqs installed. Log out/in to apply docker group changes."
+
+
+Verify commands (run manually)
+
+docker --version
+node -v
+java -version
+mvn -v
+npx hardhat --version
+
+
+Sample output
+
+Docker version 27.0.1
+v20.14.0
+openjdk version "17.0.8"
+Apache Maven 3.9.4
+Hardhat version 2.16.0
+
+
+Notes
+
+No JS code for this experiment. Once installed, proceed to experiment 2 to spin up Fabric test-network and deploy chaincode.
+
+EXPERIMENT 2 — Create & Deploy Hyperledger Fabric Chaincode (JS chaincode + Node admin helper)
+
+Goal: chaincode for assets, fitness members and car auction. Node admin/invoke helper tries real Fabric (no mock).
+
+Files
+
+2_fabric_network/chaincode/package.json
+
+{
+  "name": "asset-transfer",
+  "version": "1.0.0",
+  "main": "lib/assetTransfer.js",
+  "dependencies": {
+    "fabric-contract-api": "^2.4.0"
+  }
 }
 
-def distance_vector(nodes, graph):
-    dist = {u: {v:(0 if u==v else INF) for v in nodes} for u in nodes}
-    for u in nodes:
-        for v,w in graph.get(u, {}).items():
-            dist[u][v] = w
-    changed = True
-    while changed:
-        changed = False
-        for u in nodes:
-            for v in nodes:
-                for nbr,w in graph.get(u, {}).items():
-                    if dist[u][v] > w + dist[nbr][v]:
-                        dist[u][v] = w + dist[nbr][v]; changed=True
-    return dist
 
-print(distance_vector(list(graph.keys()), graph))
+2_fabric_network/chaincode/lib/assetTransfer.js
 
-Link State (Dijkstra)
-# link_state.py
-import heapq
-def dijkstra(src, graph):
-    dist = {v:float('inf') for v in graph}; dist[src]=0
-    pq = [(0, src)]
-    while pq:
-        d,u = heapq.heappop(pq)
-        if d!=dist[u]: continue
-        for v,w in graph[u].items():
-            nd = d + w
-            if nd < dist[v]:
-                dist[v] = nd; heapq.heappush(pq, (nd,v))
-    return dist
+'use strict';
+const { Contract } = require('fabric-contract-api');
 
-print(dijkstra('A', graph))
+class AssetTransfer extends Contract {
+  async InitLedger(ctx) {
+    const assets = [
+      { ID: 'asset1', Type: 'asset', Color: 'blue', Size: 5, Owner: 'Alice', Value: 100 },
+      { ID: 'member1', Type: 'member', Name: 'Alice', Points: 100 },
+      { ID: 'car100', Type: 'car', Make: 'Toyota', Model: 'Corolla', Owner: 'owner1', HighestBid: 1000 }
+    ];
+    for (const a of assets) {
+      await ctx.stub.putState(a.ID, Buffer.from(JSON.stringify(a)));
+    }
+  }
 
-9. Performance evaluation of Routing protocols using a simulation tool (simple comparative script)
+  // Asset ops
+  async CreateAsset(ctx, id, color, size, owner, value) {
+    const exists = await ctx.stub.getState(id);
+    if (exists && exists.length > 0) throw new Error(`Asset ${id} already exists`);
+    const asset = { ID: id, Type: 'asset', Color: color, Size: parseInt(size), Owner: owner, Value: parseFloat(value) };
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(asset)));
+    return JSON.stringify(asset);
+  }
 
-You can use the DV and LS functions above to measure convergence iterations or time for random link cost changes.
+  async ReadAsset(ctx, id) {
+    const data = await ctx.stub.getState(id);
+    if (!data || data.length === 0) throw new Error(`Asset ${id} not found`);
+    return data.toString();
+  }
 
-Example: compare iterations to converge after a link cost change (DV vs recompute Dijkstra):
+  async TransferAsset(ctx, id, newOwner) {
+    const assetBytes = await ctx.stub.getState(id);
+    if (!assetBytes || assetBytes.length === 0) throw new Error(`Asset ${id} not found`);
+    const asset = JSON.parse(assetBytes.toString());
+    asset.Owner = newOwner;
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(asset)));
+    return JSON.stringify(asset);
+  }
 
-# compare_convergence.py
-from distance_vector import distance_vector
-from link_state import dijkstra
-# For DV, we can count while loops iterations (modify function to return count)
-# For LS (link-state), recompute Dijkstra from each node and measure time
-import time
-# (left as exercise to instrument; if you want I can give full script)
+  async GetAllAssets(ctx) {
+    const iterator = await ctx.stub.getStateByRange('', '');
+    const allResults = [];
+    let res = await iterator.next();
+    while (!res.done) {
+      if (res.value && res.value.value.toString()) {
+        allResults.push(JSON.parse(res.value.value.toString('utf8')));
+      }
+      res = await iterator.next();
+    }
+    return JSON.stringify(allResults);
+  }
+
+  // Fitness ops
+  async AddMember(ctx, id, name, points) {
+    const exists = await ctx.stub.getState(id);
+    if (exists && exists.length > 0) throw new Error(`Member ${id} already exists`);
+    const member = { ID: id, Type: 'member', Name: name, Points: parseInt(points) };
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(member)));
+    return JSON.stringify(member);
+  }
+
+  async AddPoints(ctx, id, amount) {
+    const m = await ctx.stub.getState(id);
+    if (!m || m.length === 0) throw new Error('Member not found');
+    const member = JSON.parse(m.toString());
+    member.Points = (member.Points || 0) + parseInt(amount);
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(member)));
+    return JSON.stringify(member);
+  }
+
+  async RedeemPoints(ctx, id, amount) {
+    const m = await ctx.stub.getState(id);
+    if (!m || m.length === 0) throw new Error('Member not found');
+    const member = JSON.parse(m.toString());
+    const amt = parseInt(amount);
+    if (member.Points < amt) throw new Error('Insufficient points');
+    member.Points -= amt;
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(member)));
+    return JSON.stringify(member);
+  }
+
+  // Car auction
+  async CreateCar(ctx, id, make, model, owner, highestBid) {
+    const exists = await ctx.stub.getState(id);
+    if (exists && exists.length > 0) throw new Error(`Car ${id} exists`);
+    const car = { ID: id, Type: 'car', Make: make, Model: model, Owner: owner, HighestBid: parseFloat(highestBid) || 0 };
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(car)));
+    return JSON.stringify(car);
+  }
+
+  async PlaceBid(ctx, id, bidder, amount) {
+    const c = await ctx.stub.getState(id);
+    if (!c || c.length === 0) throw new Error('Car not found');
+    const car = JSON.parse(c.toString());
+    const bid = parseFloat(amount);
+    if (bid <= (car.HighestBid || 0)) throw new Error('Bid too low');
+    car.HighestBid = bid;
+    car.Owner = bidder;
+    await ctx.stub.putState(id, Buffer.from(JSON.stringify(car)));
+    return JSON.stringify(car);
+  }
+}
+
+module.exports = AssetTransfer;
 
 
-If you want a ready experiment, I’ll extend with iteration counting and randomized link changes.
+2_fabric_network/admin_invoke.js — Node helper that uses Fabric (no mock)
 
-10. Simulation of error detection using CRC (Python)
+// admin_invoke.js
+const { Gateway, Wallets } = require('fabric-network');
+const fs = require('fs');
+const path = require('path');
 
-Compute CRC-16-CCITT (simple example) and simulate error detection:
+async function getGateway() {
+  const ccpPath = path.resolve(__dirname, '../fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/connection-org1.json');
+  if (!fs.existsSync(ccpPath)) throw new Error('connection-org1.json not found; start test-network');
+  const ccp = JSON.parse(fs.readFileSync(ccpPath, 'utf8'));
+  const walletPath = path.join(__dirname, 'wallet');
+  const wallet = await Wallets.newFileSystemWallet(walletPath);
+  const gateway = new Gateway();
+  await gateway.connect(ccp, { wallet, identity: 'appUser', discovery: { enabled: true, asLocalhost: true }});
+  return gateway;
+}
 
-# crc16.py
-def crc16_ccitt(data: bytes, poly=0x1021, init=0xffff):
-    crc = init
-    for b in data:
-        crc ^= (b << 8)
-        for _ in range(8):
-            if crc & 0x8000:
-                crc = ((crc << 1) & 0xffff) ^ poly
-            else:
-                crc = (crc << 1) & 0xffff
-    return crc & 0xffff
+async function evaluate(fn, ...args) {
+  const gateway = await getGateway();
+  try {
+    const network = await gateway.getNetwork('mychannel');
+    const contract = network.getContract('asset-transfer');
+    const result = await contract.evaluateTransaction(fn, ...args);
+    return result.toString();
+  } finally {
+    gateway.disconnect();
+  }
+}
 
-if __name__ == "__main__":
-    msg = b'hello world'
-    c = crc16_ccitt(msg)
-    print(hex(c))
-    # simulate flip
-    corrupted = b'hello worle'  # last char changed
-    print("Corrupted detected?" , crc16_ccitt(corrupted) != c)
+async function submit(fn, ...args) {
+  const gateway = await getGateway();
+  try {
+    const network = await gateway.getNetwork('mychannel');
+    const contract = network.getContract('asset-transfer');
+    const result = await contract.submitTransaction(fn, ...args);
+    return result.toString();
+  } finally {
+    gateway.disconnect();
+  }
+}
+
+// CLI demo
+if (require.main === module) {
+  (async () => {
+    try {
+      console.log('Read asset1 =>', await evaluate('ReadAsset', 'asset1'));
+      console.log('Create assetX =>', await submit('CreateAsset', 'assetX', 'green', '4', 'Admin', '42'));
+      console.log('Transfer assetX =>', await submit('TransferAsset', 'assetX', 'Bob'));
+    } catch (e) {
+      console.error('ERROR:', e.message);
+    }
+  })();
+}
+
+module.exports = { evaluate, submit };
+
+Run & deploy chaincode (commands)
+
+From fabric-samples/test-network:
+
+# bring up network
+./network.sh up createChannel -c mychannel -ca
+
+# deploy chaincode (path relative to test-network)
+./network.sh deployCC -ccn asset-transfer -ccp ../../2_fabric_network/chaincode -ccl javascript
+
+# then run admin helper (ensure wallet/appUser exists)
+node ../../2_fabric_network/admin_invoke.js
+
+
+Sample output
+
+Read asset1 => {"ID":"asset1","Type":"asset","Color":"blue","Size":5,"Owner":"Alice","Value":100}
+Create assetX => {"ID":"assetX","Type":"asset","Color":"green","Size":4,"Owner":"Admin","Value":42}
+Transfer assetX => {"ID":"assetX","Type":"asset","Color":"green","Size":4,"Owner":"Bob","Value":42}
+
+
+Notes
+
+Backends in experiments 3–6 will call this deployed chaincode via similar code. No mock here.
+
+EXPERIMENT 3 — JS Client: Query & Submit Transactions
+
+Goal: Node.js client that interacts with deployed chaincode (no mock). Useful to test connection and identity.
+
+3_js_client_interaction/client.js
+
+const { Gateway, Wallets } = require('fabric-network');
+const fs = require('fs');
+const path = require('path');
+
+async function getGateway() {
+  const ccpPath = path.resolve(__dirname, '../fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/connection-org1.json');
+  if (!fs.existsSync(ccpPath)) throw new Error('connection-org1.json not found; start test-network');
+  const ccp = JSON.parse(fs.readFileSync(ccpPath, 'utf8'));
+  const wallet = await Wallets.newFileSystemWallet(path.join(__dirname, 'wallet'));
+  const gateway = new Gateway();
+  await gateway.connect(ccp, { wallet, identity: 'appUser', discovery: { enabled: true, asLocalhost: true }});
+  return gateway;
+}
+
+async function readAsset(id) {
+  const gateway = await getGateway();
+  try {
+    const network = await gateway.getNetwork('mychannel');
+    const contract = network.getContract('asset-transfer');
+    const res = await contract.evaluateTransaction('ReadAsset', id);
+    return JSON.parse(res.toString());
+  } finally {
+    gateway.disconnect();
+  }
+}
+
+async function createAsset(id, color, size, owner, value) {
+  const gateway = await getGateway();
+  try {
+    const network = await gateway.getNetwork('mychannel');
+    const contract = network.getContract('asset-transfer');
+    const res = await contract.submitTransaction('CreateAsset', id, color, String(size), owner, String(value));
+    return JSON.parse(res.toString());
+  } finally {
+    gateway.disconnect();
+  }
+}
+
+async function transferAsset(id, newOwner) {
+  const gateway = await getGateway();
+  try {
+    const network = await gateway.getNetwork('mychannel');
+    const contract = network.getContract('asset-transfer');
+    const res = await contract.submitTransaction('TransferAsset', id, newOwner);
+    return JSON.parse(res.toString());
+  } finally {
+    gateway.disconnect();
+  }
+}
+
+if (require.main === module) {
+  (async () => {
+    try {
+      console.log('read asset1 ->', await readAsset('asset1'));
+      console.log('create asset-js1 ->', await createAsset('asset-js1', 'black', 2, 'JSUser', 150));
+      console.log('transfer asset-js1 ->', await transferAsset('asset-js1', 'Eve'));
+    } catch (e) {
+      console.error('Error:', e.message);
+    }
+  })();
+}
+
+module.exports = { readAsset, createAsset, transferAsset };
+
+
+Run
+
+cd 3_js_client_interaction
+npm init -y
+npm install fabric-network
+node client.js
+
+
+Sample output
+
+read asset1 -> { ID: 'asset1', Type: 'asset', Color: 'blue', Size: 5, Owner: 'Alice', Value: 100 }
+create asset-js1 -> { ID: 'asset-js1', Type: 'asset', Color: 'black', Size: 2, Owner: 'JSUser', Value: 150 }
+transfer asset-js1 -> { ID: 'asset-js1', Type: 'asset', Color: 'black', Size: 2, Owner: 'Eve', Value: 150 }
+
+EXPERIMENT 4 — Asset Transfer App (Express backend + frontend with frontend-only mock fallback)
+
+Goal: Express backend calls Fabric via admin_invoke.js (no mock). The frontend (browser) will attempt to fetch() the backend; if fetch fails, frontend will use a browser-side mock so UI still demonstrates behavior offline.
+
+Backend
+
+4_asset_transfer_app/server.js
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const { submit, evaluate } = require('../2_fabric_network/admin_invoke');
+const path = require('path');
+
+const app = express();
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
+app.post('/asset', async (req, res) => {
+  const { id, color, size, owner, value } = req.body;
+  try {
+    const r = await submit('CreateAsset', id, color, String(size), owner, String(value));
+    res.status(201).json({ status: 'created', result: JSON.parse(r) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/asset/:id', async (req, res) => {
+  try {
+    const r = await evaluate('ReadAsset', req.params.id);
+    res.json(JSON.parse(r));
+  } catch (e) { res.status(404).json({ error: e.message }); }
+});
+
+app.post('/transfer', async (req, res) => {
+  try {
+    const r = await submit('TransferAsset', req.body.id, req.body.newOwner);
+    res.json({ status: 'transferred', result: JSON.parse(r) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.listen(3000, () => console.log('Asset transfer backend: http://localhost:3000'));
+
+Frontend (browser) — fallback-only client
+
+4_asset_transfer_app/public/index.html
+
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Asset Transfer UI</title></head>
+<body>
+<h1>Asset Transfer</h1>
+
+<div>
+  <h3>Create</h3>
+  <input id="id" placeholder="id"> <input id="color" placeholder="color"> <input id="size" placeholder="size">
+  <input id="owner" placeholder="owner"> <input id="value" placeholder="value">
+  <button onclick="create()">Create</button>
+</div>
+
+<div>
+  <h3>Read</h3>
+  <input id="readId" placeholder="id"><button onclick="read()">Read</button>
+  <pre id="out"></pre>
+</div>
+
+<div>
+  <h3>Transfer</h3>
+  <input id="tid" placeholder="id"><input id="towner" placeholder="new owner"><button onclick="transfer()">Transfer</button>
+</div>
+
+<script>
+const backend = '/';
+
+async function safeFetch(url, options) {
+  try {
+    const res = await fetch(url, options);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res;
+  } catch (e) {
+    // backend unreachable — return null to let caller handle fallback
+    return null;
+  }
+}
+
+const browserMock = {
+  db: {},
+  async create(asset) {
+    this.db[asset.ID] = asset; return asset;
+  },
+  async read(id) { return this.db[id] || null; },
+  async transfer(id, newOwner) {
+    if (!this.db[id]) throw new Error('NOT_FOUND'); this.db[id].Owner = newOwner; return this.db[id];
+  }
+};
+
+async function create() {
+  const payload = { id: id.value, color: color.value, size: size.value, owner: owner.value, value: value.value };
+  const res = await safeFetch(backend + 'asset', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res) {
+    document.getElementById('out').innerText = JSON.stringify(await res.json(), null, 2);
+  } else {
+    // fallback: use browser mock
+    const asset = { ID: payload.id, Type:'asset', Color: payload.color, Size: Number(payload.size), Owner: payload.owner, Value: Number(payload.value) };
+    browserMock.create(asset);
+    document.getElementById('out').innerText = 'FALLBACK (no backend): ' + JSON.stringify(asset, null, 2);
+  }
+}
+
+async function read() {
+  const res = await safeFetch(backend + 'asset/' + readId.value);
+  if (res) {
+    document.getElementById('out').innerText = JSON.stringify(await res.json(), null, 2);
+  } else {
+    const a = await browserMock.read(readId.value);
+    document.getElementById('out').innerText = a ? JSON.stringify(a, null, 2) : 'FALLBACK: not found';
+  }
+}
+
+async function transfer() {
+  const payload = { id: tid.value, newOwner: towner.value };
+  const res = await safeFetch(backend + 'transfer', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res) {
+    document.getElementById('out').innerText = JSON.stringify(await res.json(), null, 2);
+  } else {
+    try {
+      const r = await browserMock.transfer(tid.value, towner.value);
+      document.getElementById('out').innerText = 'FALLBACK transfer success: ' + JSON.stringify(r, null, 2);
+    } catch (e) { document.getElementById('out').innerText = 'FALLBACK error: ' + e.message; }
+  }
+}
+</script>
+</body>
+</html>
+
+
+Run
+
+cd 4_asset_transfer_app
+npm init -y
+npm install express body-parser
+node server.js
+# open http://localhost:3000/public/index.html
+
+
+Sample behaviors
+
+If backend reachable: frontend uses real endpoints and shows chaincode-created objects.
+
+If backend unreachable (server down): UI displays FALLBACK (no backend) results using browser mock.
+
+EXPERIMENT 5 — Fitness Club Rewards (Express backend without mock; frontend fallback-only)
+
+Goal: track members and points — backend uses Fabric chaincode functions AddMember, AddPoints, RedeemPoints. Frontend falls back if backend unreachable.
+
+Backend
+
+5_fitness_rewards_webapp/server.js
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const { submit, evaluate } = require('../2_fabric_network/admin_invoke');
+const app = express();
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
+app.post('/member', async (req, res) => {
+  const { id, name, points } = req.body;
+  try {
+    const r = await submit('AddMember', id, name, String(points || 0));
+    res.status(201).json({ status: 'member created', result: JSON.parse(r) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/points', async (req, res) => {
+  const { id, amount } = req.body;
+  try {
+    const r = await submit('AddPoints', id, String(amount));
+    res.json({ status: 'points added', result: JSON.parse(r) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/redeem', async (req, res) => {
+  const { id, amount } = req.body;
+  try {
+    const r = await submit('RedeemPoints', id, String(amount));
+    res.json({ status: 'redeemed', result: JSON.parse(r) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/member/:id', async (req, res) => {
+  try {
+    const r = await evaluate('ReadAsset', req.params.id);
+    res.json(JSON.parse(r));
+  } catch (e) { res.status(404).json({ error: e.message }); }
+});
+
+app.listen(4000, () => console.log('Fitness backend: http://localhost:4000'));
+
+Frontend (fallback-only)
+
+5_fitness_rewards_webapp/public/index.html
+
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Fitness Rewards UI</title></head>
+<body>
+<h1>Fitness Club Rewards</h1>
+
+<div>
+  <h3>Create Member</h3>
+  <input id="mid" placeholder="id"><input id="mname" placeholder="name"><input id="mpts" placeholder="points">
+  <button onclick="createMember()">Create</button>
+</div>
+
+<div>
+  <h3>Add Points</h3>
+  <input id="apid" placeholder="id"><input id="apamt" placeholder="amount"><button onclick="addPoints()">Add</button>
+</div>
+
+<div>
+  <h3>Redeem</h3>
+  <input id="rid" placeholder="id"><input id="ramt" placeholder="amount"><button onclick="redeem()">Redeem</button>
+</div>
+
+<div>
+  <h3>Lookup</h3>
+  <input id="gid" placeholder="id"><button onclick="getMember()">Get</button>
+  <pre id="out"></pre>
+</div>
+
+<script>
+const backend = '/';
+
+async function safeFetch(url, options) {
+  try {
+    const res = await fetch(url, options);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res;
+  } catch (e) { return null; }
+}
+
+const browserMock = { db: {} };
+
+async function createMember() {
+  const id = document.getElementById('mid').value, name = document.getElementById('mname').value, pts = Number(document.getElementById('mpts').value||0);
+  const payload = { id, name, points: pts };
+  const res = await safeFetch(backend + 'member', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res) document.getElementById('out').innerText = JSON.stringify(await res.json(), null,2);
+  else { browserMock.db[id] = { ID:id, Type:'member', Name:name, Points:pts }; document.getElementById('out').innerText = 'FALLBACK: ' + JSON.stringify(browserMock.db[id],null,2); }
+}
+
+async function addPoints() {
+  const id = document.getElementById('apid').value, amount = Number(document.getElementById('apamt').value||0);
+  const payload = { id, amount };
+  const res = await safeFetch(backend + 'points', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res) document.getElementById('out').innerText = JSON.stringify(await res.json(), null,2);
+  else { if (!browserMock.db[id]) { document.getElementById('out').innerText = 'FALLBACK: member missing'; return; } browserMock.db[id].Points = (browserMock.db[id].Points||0)+amount; document.getElementById('out').innerText = 'FALLBACK: ' + JSON.stringify(browserMock.db[id],null,2); }
+}
+
+async function redeem() {
+  const id = document.getElementById('rid').value, amount = Number(document.getElementById('ramt').value||0);
+  const payload = { id, amount };
+  const res = await safeFetch(backend + 'redeem', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res) document.getElementById('out').innerText = JSON.stringify(await res.json(), null,2);
+  else { if (!browserMock.db[id] || browserMock.db[id].Points < amount) { document.getElementById('out').innerText = 'FALLBACK: insufficient'; return; } browserMock.db[id].Points -= amount; document.getElementById('out').innerText = 'FALLBACK: ' + JSON.stringify(browserMock.db[id],null,2); }
+}
+
+async function getMember() {
+  const id = document.getElementById('gid').value;
+  const res = await safeFetch(backend + 'member/' + id);
+  if (res) document.getElementById('out').innerText = JSON.stringify(await res.json(), null,2);
+  else document.getElementById('out').innerText = JSON.stringify(browserMock.db[id]||{ error:'FALLBACK not found' }, null,2);
+}
+</script>
+</body>
+</html>
+
+
+Run
+
+cd 5_fitness_rewards_webapp
+npm init -y
+npm install express body-parser
+node server.js
+# open http://localhost:4000/public/index.html
+
+
+Behavior
+
+Backend uses Fabric chaincode (no mock).
+
+Frontend demonstrates functionality even if backend down via fallback behavior.
+
+EXPERIMENT 6 — Car Auction (Node client + frontend fallback-only)
+
+Goal: create cars and place bids. Backend uses admin_invoke.js (no mock). Frontend tries backend then falls back.
+
+Node CLI client
+
+6_car_auction/auction_cli.js
+
+const { submit, evaluate } = require('../2_fabric_network/admin_invoke');
+
+async function createCar(id, make, model, owner, startBid) {
+  try {
+    const r = await submit('CreateCar', id, make, model, owner, String(startBid||0));
+    console.log('Car created:', JSON.parse(r));
+  } catch (e) { console.error('Error:', e.message); }
+}
+
+async function placeBid(id, bidder, amount) {
+  try {
+    const r = await submit('PlaceBid', id, bidder, String(amount));
+    console.log('Bid placed:', JSON.parse(r));
+  } catch (e) { console.error('Error:', e.message); }
+}
+
+if (require.main === module) {
+  const [,,cmd, ...args] = process.argv;
+  if (cmd === 'create') createCar(...args);
+  else if (cmd === 'bid') placeBid(...args);
+  else console.log('Usage: node auction_cli.js create <id> <make> <model> <owner> <startBid>  OR  node auction_cli.js bid <id> <bidder> <amount>');
+}
+module.exports = { createCar, placeBid };
+
+Simple frontend fallback
+
+6_car_auction/public/index.html
+
+<!doctype html>
+<html><body>
+<h1>Car Auction UI</h1>
+<div>
+  <h3>Create Car</h3>
+  <input id="cid" placeholder="id"><input id="make" placeholder="make"><input id="model" placeholder="model"><input id="owner" placeholder="owner"><input id="sbid" placeholder="start bid">
+  <button onclick="create()">Create</button>
+</div>
+<div>
+  <h3>Place Bid</h3>
+  <input id="bidCar" placeholder="id"><input id="bidder" placeholder="bidder"><input id="amt" placeholder="amount"><button onclick="bid()">Bid</button>
+</div>
+<pre id="out"></pre>
+<script>
+const backend = '/';
+async function safeFetch(url, options) { try { const r = await fetch(url, options); if(!r.ok) throw new Error('HTTP '+r.status); return r; } catch(e) { return null; } }
+const mock = { db:{} };
+async function create(){
+  const payload = { id: cid.value, make: make.value, model: model.value, owner: owner.value, startBid: sbid.value||0 };
+  const res = await safeFetch(backend + 'create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res) document.getElementById('out').innerText = JSON.stringify(await res.json(), null,2);
+  else { mock.db[payload.id] = { ID: payload.id, Make: payload.make, Model: payload.model, Owner: payload.owner, HighestBid: Number(payload.startBid||0) }; document.getElementById('out').innerText = 'FALLBACK created: ' + JSON.stringify(mock.db[payload.id], null,2); }
+}
+async function bid(){
+  const id = bidCar.value, bidderName = bidder.value, amountVal = Number(amt.value);
+  const res = await safeFetch(backend + 'bid', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id, bidder: bidderName, amount: amountVal })});
+  if (res) document.getElementById('out').innerText = JSON.stringify(await res.json(), null,2);
+  else { if (!mock.db[id]) { document.getElementById('out').innerText='FALLBACK: car missing'; return; } if (amountVal <= (mock.db[id].HighestBid||0)) { document.getElementById('out').innerText='FALLBACK: bid too low'; return; } mock.db[id].HighestBid = amountVal; mock.db[id].Owner = bidderName; document.getElementById('out').innerText='FALLBACK bid placed: ' + JSON.stringify(mock.db[id], null,2); }
+}
+</script>
+</body></html>
+
+
+Note: For backend endpoints referenced by frontend (/create, /bid) you can add tiny Express wrappers around auction_cli.js that call submit to invoke chaincode (left as exercise — or ask me and I’ll add them). But frontend fallback will work regardless.
+
+CLI run
+
+cd 6_car_auction
+npm init -y
+npm install
+# run via: node auction_cli.js create car300 Honda Civic owner3 500
+# run via: node auction_cli.js bid car300 bidderZ 600
+
+
+Sample (when Fabric is running)
+
+Car created: { ID: 'car300', Type: 'car', Make: 'Honda', Model: 'Civic', Owner: 'owner3', HighestBid: 500 }
+Bid placed: { ID: 'car300', Type: 'car', Make: 'Honda', Model: 'Civic', Owner: 'bidderZ', HighestBid: 600 }
+
+
+Sample (frontend fallback-only)
+
+FALLBACK created: {"ID":"car300",...}
+FALLBACK bid placed: {"ID":"car300","HighestBid":600,"Owner":"bidderZ"}
+
+ETHEREUM (small Hardhat bits) — included here for completeness
+
+ethereum-hardhat/contracts/SimpleAuction.sol (Solidity)
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract SimpleAuction {
+    address public highestBidder;
+    uint public highestBid;
+    function bid() public payable {
+        require(msg.value > highestBid, "Bid must be higher");
+        if (highestBidder != address(0)) payable(highestBidder).transfer(highestBid);
+        highestBid = msg.value;
+        highestBidder = msg.sender;
+    }
+}
+
+
+ethereum-hardhat/scripts/deploy.js
+
+async function main(){
+  const Auction = await ethers.getContractFactory('SimpleAuction');
+  const a = await Auction.deploy();
+  await a.deployed();
+  console.log('Deployed at', a.address);
+}
+main().catch(e=>{ console.error(e); process.exit(1); });
+
+
+Run
+
+cd ethereum-hardhat
+npm init -y
+npm install --save-dev hardhat
+npx hardhat node
+npx hardhat run --network localhost scripts/deploy.js
+
+Important common notes (read before running)
+
+wallet / identity: All Fabric backend Node code expects wallet/appUser to be present. Use the test-network scripts (or copy the test-network generated user certificate + key) into each project's wallet directory as appUser identity (see Fabric docs/test-network README). If wallet not present, backends will throw connection-org1.json or identity missing errors.
+
+Chaincode deployment:
+
+Deploy 2_fabric_network/chaincode using:
+
+cd fabric-samples/test-network
+./network.sh up createChannel -c mychannel -ca
+./network.sh deployCC -ccn asset-transfer -ccp ../../2_fabric_network/chaincode -ccl javascript
+
+
+After deploy, run Node clients / Express servers.
+
+Mock rule you requested:
+
+Backends use no mock — they always try to use Fabric.
+
+Frontends (browser pages) use safeFetch() and if fetch fails they use local browser-side mock objects — so UI remains interactive even when backend/network is down.
+
+Paths: code assumes fabric-samples folder sits next to your project root. If it's elsewhere, update connection-org1.json paths.
